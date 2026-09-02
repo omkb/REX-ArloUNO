@@ -1,27 +1,10 @@
 from time import sleep
 import robot
+from constants import *
 
 arlo = robot.Robot()
 
 sleep(1)
-
-LEFT_FORWARD = 60
-RIGHT_FORWARD = 64
-
-TURN_LEFT_POWER = 50
-TURN_RIGHT_POWER = 50
-
-FORWARD_TIME = 2.55
-TURN_TIME = 0.79
-
-OUTER = 55
-INNER = 45
-
-RIGHT_LOOP_TIME = 5.0
-LEFT_LOOP_TIME = 5.0
-
-STOP_TIME = 0.5
-
 
 def forward():
     arlo.go_diff(LEFT_FORWARD, RIGHT_FORWARD, 1, 1)
