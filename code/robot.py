@@ -21,9 +21,9 @@ class Robot(object):
            to control the robot directly from your labtop (instead of from the on-board raspberry 
            pi). The value of port should point to the USB port on which the robot Arduino is connected."""
         self.port = port
-        
-        #self.serialRead = serial.Serial(self.port,9600, timeout=1) # 1 sec. timeout, wait until data is received or until timeout
-        self.serialRead = serial.Serial(self.port,9600, timeout=None) # No timeout, wait forever or until data is received
+
+        # No timeout, wait forever or until data is received 
+        self.serialRead = serial.Serial(self.port,9600, timeout=None)
 
         # Wait if serial port is not open yet
         while not self.serialRead.isOpen():
@@ -129,78 +129,3 @@ class Robot(object):
         """Reset the wheel encoder counts."""
         cmd='c\n'
         return self.send_command(cmd)
-    
-    
-    ### OBSOLETE STUFF
-        
-    def go(self):
-        """OBSOLETE: Send a go command for continuous forward driving using the wheel encoders"""
-        cmd='g\n'
-        return self.send_command(cmd)
-        
-    def backward(self):
-        """OBSOLETE: Send a backward command for continuous reverse driving using the wheel encoders"""
-        cmd='v\n'
-        return self.send_command(cmd)
-        
-
-    def left(self):
-        """OBSOLETE: Send a rotate left command for continuous rotating left using the wheel encoders"""
-        cmd='n\n'
-        return self.send_command(cmd)
-
-    def right(self):
-        """OBSOLETE: Send a rotate right command for continuous rotating right using the wheel encoders"""
-        cmd='m\n'
-        return self.send_command(cmd)
-        
-    def step_forward(self):
-        """OBSOLETE: Send a step forward command for driving forward using the wheel encoders for a 
-           predefined amount of time"""
-        cmd='f\n'
-        return self.send_command(cmd)
-
-    def step_backward(self):
-        """OBSOLETE: Send a step backward command for driving backward using the wheel encoders for a 
-           predefined amount of time"""
-        cmd='b\n'
-        return self.send_command(cmd)
-
-    def step_rotate_left(self):
-        """OBSOLETE: Send a step rotate left command for rotating left using the wheel encoders for a 
-           predefined amount of time"""
-        cmd='l\n'
-        return self.send_command(cmd)
-        
-    def step_rotate_right(self):
-        """OBSOLETE: Send a step rotate right command for rotating right using the wheel encoders for 
-           a predefined amount of time"""
-        cmd='r\n'
-        return self.send_command(cmd)
-            
-        
-    def set_speed(self, speed):
-        """OBSOLETE: Speed must be a value in the range [0; 255]. This speed is used in commands based on 
-           using the wheel encoders."""
-        cmd='z' + str(speed) + '\n'
-        return self.send_command(cmd)
-        
-    def set_turnspeed(self, speed):
-        """OBSOLETE: Turnspeed must be a value in the range [0; 255]. This speed is used in commands based on 
-           using the wheel encoders."""
-        cmd='x' + str(speed) + '\n'
-        return self.send_command(cmd)
-
-    def set_step_time(self, steptime):
-        """OBSOLETE: steptime is the amount of miliseconds used in the step_forward and step_backwards 
-           commands."""
-        cmd='t' + str(steptime) + '\n'
-        return self.send_command(cmd)
-        
-    def set_turn_time(self, turntime):
-        """OBSOLETE: turntime is the amount of miliseconds used in the step_rotate_left and 
-        step_rotate_right commands."""
-        cmd='y' + str(turntime) + '\n'
-        return self.send_command(cmd)
-        
-
