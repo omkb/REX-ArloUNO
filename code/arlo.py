@@ -5,9 +5,8 @@ from enum import IntEnum
 from typing import Optional
 from robot import Robot
 class Direction(IntEnum):
-    """Match these to whatever your go_diff implementation expects."""
     FORWARD = 1
-    BACKWARD = -1
+    BACKWARD = 0
 
 
 class HaltSignal:
