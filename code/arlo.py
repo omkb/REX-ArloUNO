@@ -61,9 +61,11 @@ class Arlo(object):
     ACCELERATION_CMS2 = 30.0      # cm/s^2, tune to taste
     CONTROL_DT_S = 0.05           # seconds between speed updates
 
-    def __init__(self, port=None):
+    def __init__(self, port='/dev/ttyACM0'):
+        print("Initializing arlo...")
         self.robot = Robot(port)
         self._current_handle: Optional[DriveHandle] = None
+        print("Finished initializing arlo")
 
     def _speed_to_pwm(self, speed_cms):
         """Map a speed in cm/s to a PWM value in [PWM_MIN, PWM_MAX]."""
@@ -105,7 +107,6 @@ class Arlo(object):
         thread = threading.Thread(
             target=self._drive_worker,
             args=(direction, speed_cms, distance_cm, debug, halt_signal),
-            daemon=True,
         )
         handle = DriveHandle(thread, halt_signal)
         self._current_handle = handle
@@ -131,6 +132,7 @@ class Arlo(object):
         def send_pwm(pwm):
             nonlocal last_pwm
             if pwm != last_pwm:
+                print(f"  -> pwm={pwm}")
                 self.robot.go_diff(pwm, pwm, direction, direction)
                 last_pwm = pwm
 
