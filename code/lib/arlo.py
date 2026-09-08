@@ -53,10 +53,14 @@ class Arlo(object):
     """High(er) level API for the Arlo Robot with error checking"""
 
     # --- calibration constants: measure these on the real robot ---
-    PWM_MIN = 40
+    PWM_MIN = 30
     PWM_MAX = 127
-    SPEED_AT_PWM_MIN_CMS = 5.0    # cm/s the robot actually moves at PWM 40
-    SPEED_AT_PWM_MAX_CMS = 60.0   # cm/s the robot actually moves at PWM 127
+    SPEED_AT_PWM_MIN_CMS = 17    # cm/s the robot actually moves at PWM 30
+    SPEED_AT_PWM_MAX_CMS = 79   # cm/s the robot actually moves at PWM 127
+
+    # measured via calibration, all 4 points fit with linear regression
+    SPEED_SLOPE = 0.6355      # cm/s per PWM unit
+    SPEED_INTERCEPT = -1.99   # cm/s 
 
     ACCELERATION_CMS2 = 30.0      # cm/s^2, tune to taste
     CONTROL_DT_S = 0.05           # seconds between speed updates
@@ -70,10 +74,8 @@ class Arlo(object):
     def _speed_to_pwm(self, speed_cms):
         """Map a speed in cm/s to a PWM value in [PWM_MIN, PWM_MAX]."""
         speed_cms = max(self.SPEED_AT_PWM_MIN_CMS, min(speed_cms, self.SPEED_AT_PWM_MAX_CMS))
-        span_speed = self.SPEED_AT_PWM_MAX_CMS - self.SPEED_AT_PWM_MIN_CMS
-        span_pwm = self.PWM_MAX - self.PWM_MIN
-        pwm = self.PWM_MIN + (speed_cms - self.SPEED_AT_PWM_MIN_CMS) * span_pwm / span_speed
-        return int(round(pwm))
+        pwm = (speed_cms - self.SPEED_INTERCEPT) / self.SPEED_SLOPE
+        return int(round(pwm)) 
 
     def drive(self, direction: Direction, speed_cms: float,
               distance_cm: Optional[float] = None,
