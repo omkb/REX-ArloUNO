@@ -1,18 +1,24 @@
-# REX-ArloUNO
-Vi vinder robo rally
+# Team ProtoArlo
 
+Team consisting of
+- Andreas
+- Oscar
+- Malte
 
+## Exercises
+
+All the code for exercises is found under `/code/exercises/`.
 
 ## Sonar sensor measurement
 
-All in mm
+All measurements are in millimeter.
 
-d      measurement
-----------------
- 100   102
- 500   493
- 750   738
-1000   991
-1420   1400
+| Expected (mm) | Measured (mm) |
+|---------------:|---------------:|
+| 100             | 102             |
+| 500             | 493             |
+| 750             | 738             |
+| 1000            | 991             |
+| 1420            | 1400            |
 
-Sample standard deviation (n−1): ≈ 7.98 mm
+**Sample standard deviation (n−1):** ≈ 7.98 mm
