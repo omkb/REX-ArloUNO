@@ -12,13 +12,13 @@ TURN_LEFT_POWER = 50
 TURN_RIGHT_POWER = 50
 
 FORWARD_TIME = 2.91
-TURN_TIME = 0.938
+TURN_TIME = 0.985
 
-OUTER = 55
-INNER = 0
+OUTER = 100
+INNER = 40
 
-RIGHT_LOOP_TIME = 7.2
-LEFT_LOOP_TIME = 7.2
+RIGHT_LOOP_TIME = 5.95
+LEFT_LOOP_TIME = 5.95
 
 STOP_TIME = 0.5
 
@@ -59,6 +59,7 @@ def figure_eight():
 
 
 figure_eight()
+
 
 arlo.stop()
 
