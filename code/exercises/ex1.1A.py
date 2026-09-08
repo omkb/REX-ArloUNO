@@ -12,7 +12,7 @@ def drive():
     """Drives forward, stops, turns 90 degress clockwise, stop"""
     # send a go_diff command to drive forward
     leftSpeed = 60
-    rightSpeed = 64
+    rightSpeed = 60
     minute = 2.55
     ninety = 0.79
     
