@@ -3,7 +3,7 @@
 Team consisting of
 - Andreas
 - Oscar
-- Malte
+- Valdemar
 
 ## Exercises
 
