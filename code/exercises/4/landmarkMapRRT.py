@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import time
 from picamera2 import Picamera2
+import matplotlib.pyplot as plt
 
 IMAGE_SIZE = (1640, 1232)
 
@@ -129,3 +130,25 @@ else:
 
 # print map
 print(obstacles)
+
+MAP_SIZE_X = 800  # cm
+MAP_SIZE_Y = 600  # cm
+
+fig, ax = plt.subplots(figsize=(8, 8))
+
+for obs_id, x, z, radius in obstacles:
+    circle = plt.Circle((x, z), radius, fill=True, alpha=0.4, edgecolor='black')
+    ax.add_patch(circle)
+    ax.plot(x, z, '.', color='black')           # mark the center
+    ax.annotate(str(obs_id), (x, z), textcoords="offset points",
+                xytext=(5, 5), fontsize=9)       # label with obstacle id
+
+ax.set_xlim(-MAP_SIZE_X / 2, MAP_SIZE_X / 2)     # Center x around 0
+ax.set_ylim(0, MAP_SIZE_Y)
+ax.set_aspect('equal')                           # keep circles circular
+ax.set_xlabel('x (cm)')
+ax.set_ylabel('z (cm)')
+ax.set_title('Obstacle Map')
+ax.grid(True, linestyle='--', alpha=0.3)
+
+plt.show()
