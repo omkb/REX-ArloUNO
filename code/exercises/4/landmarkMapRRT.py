@@ -126,3 +126,6 @@ if in_collision(point, obstacles):
     print("Collision")
 else:
     print("Free")
+
+# print map
+print(obstacles)
