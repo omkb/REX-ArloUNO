@@ -1,5 +1,6 @@
 import time
 import threading
+import math
 
 from enum import IntEnum
 from typing import Optional
@@ -64,6 +65,8 @@ class Arlo(object):
 
     ACCELERATION_CMS2 = 30.0      # cm/s^2, tune to taste
     CONTROL_DT_S = 0.05           # seconds between speed updates
+
+    TRACK_WIDTH_CM = 39   # distance between wheel centers
 
     def __init__(self, port='/dev/ttyACM0'):
         print("Initializing arlo...")
@@ -215,4 +218,135 @@ class Arlo(object):
 
         if debug:
             print("drive: halt")
+        self.robot.stop()
+
+    def _wheel_cms_to_angspeed_degs(self, wheel_speed_cms):
+        """Per-wheel linear speed (cm/s) -> robot angular speed (deg/s),
+        assuming both wheels spin at equal speed in opposite directions."""
+        return math.degrees(2 * wheel_speed_cms / self.TRACK_WIDTH_CM)
+
+    def _angspeed_degs_to_wheel_cms(self, angspeed_degs):
+        """Robot angular speed (deg/s) -> required per-wheel linear speed (cm/s)."""
+        return math.radians(angspeed_degs) * self.TRACK_WIDTH_CM / 2
+
+    def turn(self, degrees: float, speed_degs: float = 60, debug: bool = True) -> DriveHandle:
+        """
+        Turn in place around the robot's own axis, with the same
+        accel/cruise/decel ramp as drive().
+
+        degrees: how far to turn. Positive = counter-clockwise (left),
+            negative = clockwise (right).
+        speed_degs: cruising angular speed in degrees/second (always positive).
+        debug: if True (default), print each phase transition.
+
+        Returns a DriveHandle — .halt() to stop early, .wait() to block
+        until done. Calling turn()/drive() again auto-interrupts this one,
+        same as drive().
+        """
+        if self._current_handle is not None:
+            self._current_handle.halt(reason="interrupted by new turn command")
+
+        halt_signal = HaltSignal()
+        thread = threading.Thread(
+            target=self._turn_worker,
+            args=(degrees, speed_degs, debug, halt_signal),
+        )
+        handle = DriveHandle(thread, halt_signal)
+        self._current_handle = handle
+        thread.start()
+        return handle
+
+    def _turn_worker(self, degrees, speed_degs, debug, halt_signal):
+        ccw = degrees >= 0
+        total_degrees = abs(degrees)
+
+        # Turning left (CCW): left wheel backward, right wheel forward.
+        # If the robot turns the wrong way on real hardware, just swap these two.
+        dir_left = Direction.BACKWARD if ccw else Direction.FORWARD
+        dir_right = Direction.FORWARD if ccw else Direction.BACKWARD
+
+        v0_wheel = self.SPEED_AT_PWM_MIN_CMS
+        a_wheel = self.ACCELERATION_CMS2
+
+        v0_ang = self._wheel_cms_to_angspeed_degs(v0_wheel)
+        a_ang = self._wheel_cms_to_angspeed_degs(a_wheel)  # conversion is linear/proportional, so this is valid
+        target_ang = min(speed_degs, self._wheel_cms_to_angspeed_degs(self.SPEED_AT_PWM_MAX_CMS))
+
+        current_ang = v0_ang
+        turned = 0.0
+        t_prev = time.monotonic()
+        last_pwm = None
+
+        def send_pwm(pwm):
+            nonlocal last_pwm
+            if pwm != last_pwm:
+                print(f"  -> pwm={pwm}")
+                self.robot.go_diff(pwm, pwm, dir_left, dir_right)
+                last_pwm = pwm
+
+        def halted():
+            if halt_signal.is_set():
+                if debug:
+                    print(f"turn: {halt_signal.reason}")
+                self.robot.stop()
+                return True
+            return False
+
+        d_ramp_total = (target_ang ** 2 - v0_ang ** 2) / a_ang
+        if d_ramp_total >= total_degrees:
+            target_ang = (v0_ang ** 2 + a_ang * total_degrees) ** 0.5
+            d_accel = d_decel = total_degrees / 2.0
+        else:
+            d_accel = d_decel = (target_ang ** 2 - v0_ang ** 2) / (2 * a_ang)
+
+        # --- acceleration phase ---
+        if debug:
+            print("turn: acceleration")
+        while current_ang < target_ang and turned < d_accel:
+            if halted():
+                return
+            now = time.monotonic()
+            dt = now - t_prev
+            t_prev = now
+
+            current_ang = min(target_ang, current_ang + a_ang * dt)
+            send_pwm(self._speed_to_pwm(self._angspeed_degs_to_wheel_cms(current_ang)))
+
+            turned += current_ang * dt
+            time.sleep(self.CONTROL_DT_S)
+
+        # --- cruise phase ---
+        if debug:
+            print("turn: cruise phase")
+        send_pwm(self._speed_to_pwm(self._angspeed_degs_to_wheel_cms(target_ang)))
+
+        cruise_end = total_degrees - d_decel
+        while turned < cruise_end:
+            if halted():
+                return
+            now = time.monotonic()
+            dt = now - t_prev
+            t_prev = now
+
+            turned += target_ang * dt
+            time.sleep(self.CONTROL_DT_S)
+
+        # --- deceleration phase ---
+        if debug:
+            print("turn: deacceleration")
+        while current_ang > v0_ang and turned < total_degrees:
+            if halted():
+                return
+            now = time.monotonic()
+            dt = now - t_prev
+            t_prev = now
+
+            current_ang = max(v0_ang, current_ang - a_ang * dt)
+            send_pwm(self._speed_to_pwm(self._angspeed_degs_to_wheel_cms(current_ang)))
+
+            turned += current_ang * dt
+            time.sleep(self.CONTROL_DT_S)
+
+        if debug:
+            print("turn: halt")
         self.robot.stop()
