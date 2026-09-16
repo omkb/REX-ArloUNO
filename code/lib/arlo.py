@@ -262,8 +262,8 @@ class Arlo(object):
 
         # Turning left (CCW): left wheel backward, right wheel forward.
         # If the robot turns the wrong way on real hardware, just swap these two.
-        dir_left = Direction.BACKWARD if ccw else Direction.FORWARD
-        dir_right = Direction.FORWARD if ccw else Direction.BACKWARD
+        dir_right = Direction.BACKWARD if ccw else Direction.FORWARD
+        dir_left  = Direction.FORWARD if ccw else Direction.BACKWARD
 
         v0_wheel = self.SPEED_AT_PWM_MIN_CMS
         a_wheel = self.ACCELERATION_CMS2
