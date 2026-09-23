@@ -254,7 +254,6 @@ def get_sampling_bounds(goal, margin=200):
 
     return x_min, x_max, z_min, z_max
 
-
 # --------------------------------------------------
 # RRT
 # --------------------------------------------------
@@ -414,6 +413,31 @@ def follow_path(path, drive_speed=30, turn_speed=60):
 
     print("Path completed")
 
+def simplify_path(path, obstacles):
+    simplified_path = [path[0]]
+
+    current_index = 0
+
+    while current_index < len(path) - 1:
+
+        # Start by trying to go directly to the goal
+        next_index = len(path) - 1
+
+        # Move backwards until we find a reachable point
+        while next_index > current_index + 1:
+            if not collision_in_segment(
+                path[current_index],
+                path[next_index],
+                obstacles
+            ):
+                break
+
+            next_index -= 1
+
+        simplified_path.append(path[next_index])
+        current_index = next_index
+
+    return simplified_path
 
 # --------------------------------------------------
 # MAIN
@@ -447,15 +471,16 @@ test_path = [
 ]
 
 
-if tree is None:
-    print("No path found")
+path = extract_path(tree)
 
-else:
-    path = extract_path(tree)
+print("Original path:")
+for point in path:
+    print(point)
 
-    print("Path:")
-    for point in path:
-        print(point)
+path = simplify_path(path, obstacles)
 
+print("Simplified path:")
+for point in path:
+    print(point)
 
-    follow_path(path)
+follow_path(path)
