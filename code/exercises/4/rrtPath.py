@@ -3,6 +3,14 @@ import numpy as np
 import time
 from picamera2 import Picamera2
 import matplotlib.pyplot as plt
+from arlo import Arlo, Direction
+
+arlo = Arlo()
+
+
+# --------------------------------------------------
+# CAMERA
+# --------------------------------------------------
 
 IMAGE_SIZE = (1640, 1232)
 
@@ -27,18 +35,52 @@ parameters = cv2.aruco.DetectorParameters_create()
 
 MARKER_SIZE_CM = 14.4
 
-BOX_LENGTH_CM = 28
-BOX_WIDTH_CM = 23
-ROBOT_RADIUS_CM = 24
 
-BOX_RADIUS_CM = np.sqrt(
-    (BOX_LENGTH_CM / 2) ** 2 +
+# --------------------------------------------------
+# ROBOT / OBSTACLE GEOMETRY
+# --------------------------------------------------
+
+CAMERA_OFFSET_CM = 22.5
+
+BOX_LENGTH_CM = 35
+BOX_WIDTH_CM = 30
+ROBOT_RADIUS_CM = 25
+
+# Because the ArUco marker is on the SIDE of the box,
+# not at its center, use a conservative radius measured
+# from a face center to the furthest box corner.
+
+RADIUS_FROM_LENGTH_FACE = np.sqrt(
+    BOX_WIDTH_CM ** 2 +
+    (BOX_LENGTH_CM / 2) ** 2
+)
+
+RADIUS_FROM_WIDTH_FACE = np.sqrt(
+    BOX_LENGTH_CM ** 2 +
     (BOX_WIDTH_CM / 2) ** 2
+)
+
+BOX_RADIUS_CM = max(
+    RADIUS_FROM_LENGTH_FACE,
+    RADIUS_FROM_WIDTH_FACE
 )
 
 COLLISION_RADIUS_CM = BOX_RADIUS_CM + ROBOT_RADIUS_CM
 
+print("Box radius:", BOX_RADIUS_CM)
+print("Collision radius:", COLLISION_RADIUS_CM)
+
+
+# --------------------------------------------------
+# RRT
+# --------------------------------------------------
+
 EXPAND_DISTANCE = 30
+
+
+# --------------------------------------------------
+# CAMERA SETUP
+# --------------------------------------------------
 
 cam = Picamera2()
 
@@ -55,6 +97,11 @@ cam.start()
 time.sleep(1)
 
 frame = cam.capture_array()
+
+
+# --------------------------------------------------
+# LANDMARK DETECTION
+# --------------------------------------------------
 
 def detect_all_landmarks(frame):
 
@@ -83,26 +130,47 @@ def detect_all_landmarks(frame):
         marker_id = ids[i][0]
         tvec = tvecs[i][0]
 
+        # Position relative to camera
         x = tvec[0]
         z = tvec[2]
 
-        landmarks.append((marker_id, x, z))
+        # Convert to robot-center coordinate system
+
+        landmarks.append(
+            (marker_id, x, z)
+        )
 
     return landmarks
 
 
+# --------------------------------------------------
+# OBSTACLE MAP
+# --------------------------------------------------
+
 def build_obstacle_map_with_radius(landmarks):
+
     obstacles = []
 
     for marker_id, x, z in landmarks:
+
         obstacles.append(
-            (marker_id, x, z, COLLISION_RADIUS_CM)
+            (
+                marker_id,
+                x,
+                z,
+                COLLISION_RADIUS_CM
+            )
         )
 
     return obstacles
 
 
+# --------------------------------------------------
+# COLLISION CHECK
+# --------------------------------------------------
+
 def collision(position, obstacles):
+
     x, z = position
 
     for marker_id, ox, oz, radius in obstacles:
@@ -117,15 +185,18 @@ def collision(position, obstacles):
 
     return False
 
+
 def collision_in_segment(p1, p2, obstacles, step_cm=10):
-    p1 = np.array(p1, dtype=float)
-    p2 = np.array(p2, dtype=float)
+
+    p1 = np.array(p1)
+    p2 = np.array(p2)
 
     distance = np.linalg.norm(p2 - p1)
 
     num_steps = int(distance / step_cm) + 1
 
     for t in np.linspace(0, 1, num_steps):
+
         point = p1 + t * (p2 - p1)
 
         if collision(point, obstacles):
@@ -133,15 +204,22 @@ def collision_in_segment(p1, p2, obstacles, step_cm=10):
 
     return False
 
+
+# --------------------------------------------------
+# RRT HELPERS
+# --------------------------------------------------
+
 def sample_point(x_min, x_max, z_min, z_max, goal):
 
+    # Goal bias
     if np.random.rand() < 0.1:
-        return np.array(goal, dtype=float)
+        return np.array(goal)
 
     return np.array([
         np.random.uniform(x_min, x_max),
         np.random.uniform(z_min, z_max)
     ])
+
 
 def find_nearest(tree, sample):
 
@@ -150,9 +228,8 @@ def find_nearest(tree, sample):
         for node in tree
     ]
 
-    index = np.argmin(distances)
+    return np.argmin(distances)
 
-    return index
 
 def expand(from_point, to_point):
 
@@ -166,7 +243,9 @@ def expand(from_point, to_point):
 
     return from_point + EXPAND_DISTANCE * direction
 
+
 def get_sampling_bounds(goal, margin=200):
+
     x_min = min(0, goal[0]) - margin
     x_max = max(0, goal[0]) + margin
 
@@ -176,50 +255,79 @@ def get_sampling_bounds(goal, margin=200):
     return x_min, x_max, z_min, z_max
 
 
+# --------------------------------------------------
+# RRT
+# --------------------------------------------------
+
 def rrt(start, goal, obstacles, max_iterations=5000):
 
     x_min, x_max, z_min, z_max = get_sampling_bounds(goal)
 
-    tree = [{"point": np.array(start, dtype=float), "parent": None}]
+    tree = [
+        {
+            "point": np.array(start),
+            "parent": None
+        }
+    ]
 
     goal = np.array(goal)
 
     for _ in range(max_iterations):
 
         sample = sample_point(
-            x_min, x_max,
-            z_min, z_max,
+            x_min,
+            x_max,
+            z_min,
+            z_max,
             goal
         )
 
         nearest_index = find_nearest(tree, sample)
         nearest_point = tree[nearest_index]["point"]
 
-        new_point = expand(nearest_point, sample)
+        new_point = expand(
+            nearest_point,
+            sample
+        )
 
-        # New node itself is invalid
         if collision(new_point, obstacles):
             continue
 
-        # Edge to new node is invalid
-        if collision_in_segment(nearest_point, new_point, obstacles):
+        if collision_in_segment(
+            nearest_point,
+            new_point,
+            obstacles
+        ):
             continue
 
-        tree.append({"point": new_point, "parent": nearest_index})
+        tree.append({
+            "point": new_point,
+            "parent": nearest_index
+        })
 
         new_index = len(tree) - 1
 
-        # Are we close enough to goal
         if np.linalg.norm(new_point - goal) <= EXPAND_DISTANCE:
 
-            # Can we connect the final segment
-            if not collision_in_segment(new_point, goal, obstacles):
+            if not collision_in_segment(
+                new_point,
+                goal,
+                obstacles
+            ):
 
-                tree.append({"point": goal, "parent": new_index})
+                tree.append({
+                    "point": goal,
+                    "parent": new_index
+                })
 
                 return tree
 
     return None
+
+
+# --------------------------------------------------
+# EXTRACT PATH
+# --------------------------------------------------
 
 def extract_path(tree):
 
@@ -240,16 +348,114 @@ def extract_path(tree):
     return path
 
 
+# --------------------------------------------------
+# FOLLOW PATH
+# --------------------------------------------------
+
+def follow_path(path, drive_speed=30, turn_speed=60):
+
+    # Heading relative to ORIGINAL coordinate system.
+    # 0 degrees = +z
+    current_heading = 0.0
+
+    for i in range(len(path) - 1):
+
+        current = path[i]
+        target = path[i + 1]
+
+        dx = target[0] - current[0]
+        dz = target[1] - current[1]
+
+        distance = np.sqrt(
+            dx ** 2 +
+            dz ** 2
+        )
+
+        # +x is right
+        desired_heading = np.degrees(
+            np.arctan2(dx, dz)
+        )
+
+        turn_angle = (
+            desired_heading -
+            current_heading
+        )
+
+        # Normalize to [-180, 180]
+        turn_angle = (
+            (turn_angle + 180) % 360
+        ) - 180
+
+        print(
+            f"Segment {i}: "
+            f"{current} -> {target}, "
+            f"turn={turn_angle:.1f} deg, "
+            f"drive={distance:.1f} cm"
+        )
+
+        # Turn around ROBOT CENTER
+        turn_handle = arlo.turn(
+            turn_angle,
+            speed_degs=turn_speed,
+            debug = False)
+
+        turn_handle.wait()
+
+        # Move ROBOT CENTER towards next waypoint
+        drive_handle = arlo.drive(
+            Direction.FORWARD,
+            speed_cms=drive_speed,
+            distance_cm=distance,
+            debug = False)
+
+        drive_handle.wait()
+
+        current_heading = desired_heading
+
+    print("Path completed")
+
+
+# --------------------------------------------------
+# MAIN
+# --------------------------------------------------
+
 landmarks = detect_all_landmarks(frame)
 
-obstacles = build_obstacle_map_with_radius(landmarks)
+print("Landmarks relative to robot center:")
+print(landmarks)
 
-start = (0, 0)
-goal = (0, 300)
+obstacles = build_obstacle_map_with_radius(
+    landmarks
+)
 
-tree = rrt(start, goal, obstacles)
+print("Obstacles:")
+print(obstacles)
 
-path = extract_path(tree)
+start = (0, -CAMERA_OFFSET_CM)
+goal = (0, 400)
 
-print(path)
+tree = rrt(
+    start,
+    goal,
+    obstacles
+)
 
+test_path = [
+    np.array([0.0, -CAMERA_OFFSET_CM]),
+    np.array([0.0, 50.0]),
+    np.array([70.0, 120.0])
+]
+
+
+if tree is None:
+    print("No path found")
+
+else:
+    path = extract_path(tree)
+
+    print("Path:")
+    for point in path:
+        print(point)
+
+
+    follow_path(path)
