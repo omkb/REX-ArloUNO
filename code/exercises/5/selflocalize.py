@@ -6,13 +6,15 @@ import time
 from timeit import default_timer as timer
 import sys
 import os
+from pathlib import Path
 
 # Flags
 showGUI = True  # Whether or not to open GUI windows
 onRobot = True  # Whether or not we are running on the Arlo robot
 
-sys.path.append("../Arlo/python")
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "lib"))
 
+import robot
 
 def normalize_angle(a):
     """Wrap angle to [-pi, pi]."""
