@@ -21,3 +21,24 @@ If you like you can change calibration parameters based on your own estimates of
 Kim Steenstrup Pedersen, september, 2015, 2017, 2018, 2020, 2025.
 
 Søren Hauberg, august 21st, 2006.
+
+# How to set up
+
+First, create virtual environment.
+
+```
+python3.12 -m venv .venv # Python 3.12 is needed because of opencv version
+```
+
+activate venv
+
+```
+source .venv/bin/activate
+```
+
+Now install dependencies
+
+```
+pip install -r requirements.txt
+```
+
