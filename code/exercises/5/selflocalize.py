@@ -259,6 +259,9 @@ try:
     
         est_pose = particle.estimate_pose(particles) # The estimate of the robots current pose
 
+        # Draw map
+        draw_world(est_pose, particles, world)
+            
         if showGUI and frame_counter % 10 == 0:
             # Draw map
             draw_world(est_pose, particles, world)
