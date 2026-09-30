@@ -191,7 +191,7 @@ try:
     angular_velocity = 0.0 # radians/sec
 
     # Initialize the robot (XXX: You do this) TODO
-    # arlo = robot.Robot()
+    arlo = robot.Robot()
 
     # Allocate space for world map
     world = np.zeros((500,500,3), dtype=np.uint8)
