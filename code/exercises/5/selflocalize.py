@@ -16,6 +16,8 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "lib"))
 
 import robot
 
+frame_counter = 0
+
 def normalize_angle(a):
     """Wrap angle to [-pi, pi]."""
     return (a + np.pi) % (2.0 * np.pi) - np.pi
@@ -258,7 +260,7 @@ try:
     
         est_pose = particle.estimate_pose(particles) # The estimate of the robots current pose
 
-        if showGUI:
+        if showGUI and frame_counter % 10 == 0:
             # Draw map
             draw_world(est_pose, particles, world)
     
@@ -267,6 +269,8 @@ try:
 
             # Show world
             cv2.imshow(WIN_World, world)
+        
+        frame_counter += 1
     
   
 finally: 
