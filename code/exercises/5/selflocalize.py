@@ -166,6 +166,31 @@ def initialize_particles(num_particles):
 
     return particles
 
+def drive_step(arlo, pose, target,
+               turn_power=50, drive_power=60,
+               ang_tol=np.radians(10), dist_tol=150):
+    """One control step. Call it every time you have a fresh pose estimate.
+    Returns True when the target is reached. dist_tol is in your landmark units."""
+    x, y, theta = pose
+    dx, dy = target[0] - x, target[1] - y
+
+    # Arrived?
+    if np.hypot(dx, dy) < dist_tol:
+        arlo.stop()
+        return True
+
+    # Signed heading error, wrapped to [-pi, pi]
+    err = np.arctan2(dy, dx) - theta
+    err = (err + np.pi) % (2 * np.pi) - np.pi
+
+    if abs(err) > ang_tol:
+        if err > 0:   # target is to the left -> turn left (counter-clockwise)
+            arlo.go_diff(turn_power, turn_power, 0, 1)
+        else:         # target is to the right -> turn right
+            arlo.go_diff(turn_power, turn_power, 1, 0)
+    else:
+        arlo.go_diff(drive_power, drive_power, 1, 1)  # facing it, go forward
+    return False
 
 # Main program #
 try:
@@ -263,8 +288,6 @@ try:
         draw_world(est_pose, particles, world)
             
         if showGUI and frame_counter % 10 == 0:
-            # Draw map
-            draw_world(est_pose, particles, world)
     
             # Show frame
             cv2.imshow(WIN_RF1, colour)
@@ -273,7 +296,14 @@ try:
             cv2.imshow(WIN_World, world)
         
         frame_counter += 1
-    
+        
+        # Move robot in between the two landmarks
+        target = ((landmarks[2][0] + landmarks[6][0]) / 2,
+                  (landmarks[2][1] + landmarks[6][1]) / 2)        
+        pose = (est_pose.getX(), est_pose.getY(), est_pose.getTheta())
+        
+        if drive_step(arlo, pose, target):
+            print("Reached the target")
   
 finally: 
     # Make sure to clean up even if an exception occurred
