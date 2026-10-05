@@ -18,9 +18,12 @@ from mcl import (
 # MAP
 # --------------------------------------------------
 
+BOX_A = 6
+BOX_B = 7
+
 landmarks = {
-    1: (0.0, 0.0),
-    2: (300.0, 0.0)
+    BOX_A: (0.0, 0.0),
+    BOX_B: (100.0, 0.0)
 }
 
 
@@ -68,8 +71,8 @@ particles = initialize_particles()
 # --------------------------------------------------
 
 def get_goal():
-    x1, y1 = landmarks[1]
-    x2, y2 = landmarks[2]
+    x1, y1 = landmarks[BOX_A]
+    x2, y2 = landmarks[BOX_B]
 
     goal_x = (x1 + x2) / 2
     goal_y = (y1 + y2) / 2
