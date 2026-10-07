@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "lib"))
 
 import robot
+from arlo import Arlo
 
 def normalize_angle(a):
     """Wrap angle to [-pi, pi]."""
@@ -156,31 +157,42 @@ def initialize_particles(num_particles):
 
     return particles
 
+def pwm_to_cms(pwm):
+    """Wheel speed in cm/s for a given motor PWM, from Arlo's calibration."""
+    return Arlo.SPEED_SLOPE * pwm + Arlo.SPEED_INTERCEPT
+
+
 def drive_step(arlo, pose, target,
                turn_power=50, drive_power=60,
-               ang_tol=np.radians(10), dist_tol=150):
+               ang_tol=np.radians(10), dist_tol=15):
     """One control step. Call it every time you have a fresh pose estimate.
-    Returns True when the target is reached. dist_tol is in your landmark units."""
+    Returns (reached, velocity, angular_velocity): whether the target is reached,
+    and the commanded robot speed in cm/s and rad/s for the motion model.
+    dist_tol is in your landmark units."""
     x, y, theta = pose
     dx, dy = target[0] - x, target[1] - y
 
     # Arrived?
     if np.hypot(dx, dy) < dist_tol:
         arlo.stop()
-        return True
+        return True, 0.0, 0.0
 
     # Signed heading error, wrapped to [-pi, pi]
     err = np.arctan2(dy, dx) - theta
     err = (err + np.pi) % (2 * np.pi) - np.pi
 
     if abs(err) > ang_tol:
+        # Turning in place: wheels spin opposite ways, omega = 2 * v_wheel / track width
+        omega = 2.0 * pwm_to_cms(turn_power) / Arlo.TRACK_WIDTH_CM
         if err > 0:   # target is to the left -> turn left (counter-clockwise)
             arlo.go_diff(turn_power, turn_power, 0, 1)
+            return False, 0.0, omega
         else:         # target is to the right -> turn right
             arlo.go_diff(turn_power, turn_power, 1, 0)
+            return False, 0.0, -omega
     else:
         arlo.go_diff(drive_power, drive_power, 1, 1)  # facing it, go forward
-    return False
+        return False, pwm_to_cms(drive_power), 0.0
 
 # Main program #
 cam = None
@@ -295,7 +307,8 @@ try:
         pose = (est_pose.getX(), est_pose.getY(), est_pose.getTheta())
         
         if isRunningOnArlo():
-            if drive_step(arlo, pose, target):
+            reached, velocity, angular_velocity = drive_step(arlo, pose, target)
+            if reached:
                 print("Reached the target")
   
 finally: 
