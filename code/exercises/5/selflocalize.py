@@ -80,10 +80,10 @@ CBLACK = (0, 0, 0)
 
 # Landmarks.
 # The robot knows the position of 2 landmarks. Their coordinates are in the unit centimeters [cm].
-landmarkIDs = [6, 2]
+landmarkIDs = [9, 11]
 landmarks = {
-    9: (0.0, 0.0),  # Coordinates for landmark 1
-    11: (100.0, 0.0)  # Coordinates for landmark 2
+    landmarkIDs[0]: (0.0, 0.0),  # Coordinates for landmark 1
+    landmarkIDs[1]: (100.0, 0.0)  # Coordinates for landmark 2
 }
 landmark_colors = [CRED, CGREEN] # Colors used when drawing the landmarks
 
@@ -179,6 +179,7 @@ def drive_step(arlo, pose, target,
     return False
 
 # Main program #
+cam = None
 try:
     if showGUI:
         # Open windows
@@ -202,7 +203,8 @@ try:
     angular_velocity = 0.0 # radians/sec
 
     # Initialize the robot (XXX: You do this) TODO
-    arlo = robot.Robot()
+    if isRunningOnArlo():
+        arlo = robot.Robot()
 
     # Allocate space for world map
     world = np.zeros((500,500,3), dtype=np.uint8)
@@ -284,12 +286,13 @@ try:
         frame_counter += 1
         
         # Move robot in between the two landmarks
-        target = ((landmarks[2][0] + landmarks[6][0]) / 2,
-                  (landmarks[2][1] + landmarks[6][1]) / 2)        
+        lm1, lm2 = landmarks[landmarkIDs[0]], landmarks[landmarkIDs[1]]
+        target = ((lm1[0] + lm2[0]) / 2, (lm1[1] + lm2[1]) / 2)        
         pose = (est_pose.getX(), est_pose.getY(), est_pose.getTheta())
         
-        if drive_step(arlo, pose, target):
-            print("Reached the target")
+        if isRunningOnArlo():
+            if drive_step(arlo, pose, target):
+                print("Reached the target")
   
 finally: 
     # Make sure to clean up even if an exception occurred
@@ -298,5 +301,6 @@ finally:
     cv2.destroyAllWindows()
 
     # Clean-up capture thread
-    cam.terminateCaptureThread()
+    if cam is not None:
+        cam.terminateCaptureThread()
 
