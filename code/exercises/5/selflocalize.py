@@ -9,8 +9,6 @@ import os
 import socket
 from pathlib import Path
 
-# Flags
-
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "lib"))
 
 import robot
