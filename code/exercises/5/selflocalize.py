@@ -18,13 +18,17 @@ def normalize_angle(a):
     return (a + np.pi) % (2.0 * np.pi) - np.pi
 
 
-def move_particles(particles, velocity, angular_velocity, dt, sigma=2.0, sigma_theta=0.05):
-    """Motion model: move every particle along its own heading, then add noise."""
+def move_particles(particles, velocity, angular_velocity, dt,
+                   alpha_d=0.1, alpha_th=0.1, min_sigma=0.2, min_sigma_th=0.005):
+    """Motion model: move every particle along its own heading, then add noise
+    proportional to how far the robot moved this step."""
     dist = velocity * dt
     dtheta = angular_velocity * dt
     for p in particles:
         th = p.getTheta()
         particle.move_particle(p, dist * np.cos(th), dist * np.sin(th), dtheta)
+    sigma = min_sigma + alpha_d * abs(dist)
+    sigma_theta = min_sigma_th + alpha_th * abs(dtheta) + 0.01 * abs(dist)
     particle.add_uncertainty(particles, sigma, sigma_theta)
 
 
@@ -77,10 +81,10 @@ CBLACK = (0, 0, 0)
 
 # Landmarks.
 # The robot knows the position of 2 landmarks. Their coordinates are in the unit centimeters [cm].
-landmarkIDs = [9, 11]
+landmarkIDs = [6, 10]
 landmarks = {
     landmarkIDs[0]: (0.0, 0.0),  # Coordinates for landmark 1
-    landmarkIDs[1]: (100.0, 0.0)  # Coordinates for landmark 2
+    landmarkIDs[1]: (170.0, 0.0)  # Coordinates for landmark 2
 }
 landmark_colors = [CRED, CGREEN] # Colors used when drawing the landmarks
 
@@ -259,7 +263,7 @@ try:
 
             # --- Resample ---
             particles = resample(particles)
-            particle.add_uncertainty(particles, 1.0, 0.02)  # small jitter to keep diversity
+            particle.add_uncertainty(particles, 0.5, 0.01)  # small jitter to keep diversity
 
             cam.draw_aruco_objects(colour)
         else:
