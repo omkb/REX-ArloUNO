@@ -8,7 +8,7 @@ from timeit import default_timer as timer
 import sys
 import os
 import socket
-import threading
+import select
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "lib"))
@@ -304,16 +304,10 @@ try:
     if isRunningOnArlo():
         arlo = robot.Robot()
 
-    # Don't drive until the user presses Enter; the filter keeps running meanwhile
-    start_driving = threading.Event()
-    def wait_for_enter():
-        try:
-            input("Press Enter to start driving...\n")
-            start_driving.set()
-        except EOFError:
-            print("selflocalize.py: no terminal input - robot will not drive")
+    # Don't drive until the user presses Enter; the filter and map keep running meanwhile
+    start_driving = False
     if isRunningOnArlo():
-        threading.Thread(target=wait_for_enter, daemon=True).start()
+        print("Press Enter to start driving...")
 
     print("Opening and initializing camera")
     if isRunningOnArlo():
@@ -329,10 +323,21 @@ try:
 
     while True:
 
+        # Start driving once Enter has been pressed (non-blocking check of stdin)
+        if isRunningOnArlo() and not start_driving:
+            ready, _, _ = select.select([sys.stdin], [], [], 0)
+            if ready:
+                sys.stdin.readline()
+                start_driving = True
+                print("Driving")
+
         # Move the robot according to user input (only for testing)
-        action = cv2.waitKey(10)
-        if action == ord('q'): # Quit
-            break
+        if showCamera or showWorld:
+            action = cv2.waitKey(10)
+            if action == ord('q'): # Quit
+                break
+        else:
+            action = -1
 
         if not isRunningOnArlo():
             if action == ord('w'): # Forward
@@ -399,7 +404,7 @@ try:
         target = ((lm1[0] + lm2[0]) / 2, (lm1[1] + lm2[1]) / 2)        
         pose = (est_pose.getX(), est_pose.getY(), est_pose.getTheta())
         
-        if isRunningOnArlo() and start_driving.is_set():
+        if isRunningOnArlo() and start_driving:
             if not is_localized(particles):
                 moved = search_step(arlo)
             else:
