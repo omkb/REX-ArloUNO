@@ -1,6 +1,7 @@
 import cv2
 import particle
 import camera
+import mapstream
 import numpy as np
 import time
 from timeit import default_timer as timer
@@ -101,7 +102,9 @@ def isRunningOnArlo():
     return socket.gethostname() == 'protoarlo'
 
 showCamera = not isRunningOnArlo()  # Camera stream is too heavy for SSH X forwarding
-showWorld = not isRunningOnArlo() or 'DISPLAY' in os.environ  # On Arlo, only with X forwarding
+showWorld = not isRunningOnArlo()  # World view window on the laptop
+streamWorld = isRunningOnArlo()  # On Arlo, stream the world view to a browser instead
+STREAM_PORT = 8000
 
 # Some color constants in BGR format
 CRED = (0, 0, 255)
@@ -135,7 +138,7 @@ def jet(x):
 
     return (255.0*r, 255.0*g, 255.0*b)
 
-def draw_world(est_pose, particles, world):
+def draw_world(est_pose, particles, world, max_drawn=200):
     """Visualization.
     This functions draws robots position in the world coordinate system."""
 
@@ -153,7 +156,10 @@ def draw_world(est_pose, particles, world):
     for particle in particles:
         max_weight = max(max_weight, particle.getWeight())
 
-    # Draw particles
+    # Draw particles (a random subset, drawing all of them is slow on the Pi)
+    if len(particles) > max_drawn:
+        idx = np.random.choice(len(particles), size=max_drawn, replace=False)
+        particles = [particles[i] for i in idx]
     for particle in particles:
         x = int(particle.getX() + offsetX)
         y = ymax - (int(particle.getY() + offsetY))
@@ -257,12 +263,16 @@ def drive_step(arlo, pose, target,
 
 # Main program #
 cam = None
+streamer = None
 try:
     # Open windows
     if showCamera:
         WIN_RF1 = "Robot view"
         cv2.namedWindow(WIN_RF1)
         cv2.moveWindow(WIN_RF1, 50, 50)
+
+    if streamWorld:
+        streamer = mapstream.MapStreamer(STREAM_PORT)
 
     if showWorld:
         WIN_World = "World view"
@@ -359,12 +369,16 @@ try:
             # Show frame
             cv2.imshow(WIN_RF1, colour)
 
-        if showWorld:
+        if showWorld or streamWorld:
             # Draw map
             draw_world(est_pose, particles, world)
 
+        if showWorld:
             # Show world
             cv2.imshow(WIN_World, world)
+
+        if streamWorld:
+            streamer.publish(world)
         
         # Move robot in between the two landmarks
         lm1, lm2 = landmarks[landmarkIDs[0]], landmarks[landmarkIDs[1]]
@@ -388,4 +402,7 @@ finally:
     # Clean-up capture thread
     if cam is not None:
         cam.terminateCaptureThread()
+
+    if streamer is not None:
+        streamer.close()
 
