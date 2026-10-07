@@ -8,6 +8,7 @@ from timeit import default_timer as timer
 import sys
 import os
 import socket
+import threading
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "lib"))
@@ -291,15 +292,28 @@ try:
     angular_velocity = 0.0 # radians/sec
     moved = (0.0, 0.0)  # (cm, rad) commanded on Arlo since the last prediction
 
+    # Allocate space for world map
+    world = np.zeros((500,500,3), dtype=np.uint8)
+
+    # Draw map, and stream it right away so the browser shows it during start-up
+    draw_world(est_pose, particles, world)
+    if streamWorld:
+        streamer.publish(world)
+
     # Initialize the robot (XXX: You do this) TODO
     if isRunningOnArlo():
         arlo = robot.Robot()
 
-    # Allocate space for world map
-    world = np.zeros((500,500,3), dtype=np.uint8)
-
-    # Draw map
-    draw_world(est_pose, particles, world)
+    # Don't drive until the user presses Enter; the filter keeps running meanwhile
+    start_driving = threading.Event()
+    def wait_for_enter():
+        try:
+            input("Press Enter to start driving...\n")
+            start_driving.set()
+        except EOFError:
+            print("selflocalize.py: no terminal input - robot will not drive")
+    if isRunningOnArlo():
+        threading.Thread(target=wait_for_enter, daemon=True).start()
 
     print("Opening and initializing camera")
     if isRunningOnArlo():
@@ -385,7 +399,7 @@ try:
         target = ((lm1[0] + lm2[0]) / 2, (lm1[1] + lm2[1]) / 2)        
         pose = (est_pose.getX(), est_pose.getY(), est_pose.getTheta())
         
-        if isRunningOnArlo():
+        if isRunningOnArlo() and start_driving.is_set():
             if not is_localized(particles):
                 moved = search_step(arlo)
             else:
