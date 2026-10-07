@@ -18,12 +18,9 @@ from mcl import (
 # MAP
 # --------------------------------------------------
 
-BOX_A = 6
-BOX_B = 7
-
 landmarks = {
-    BOX_A: (0.0, 0.0),
-    BOX_B: (100.0, 0.0)
+    10: (0.0, 0.0),
+    6: (170.0, 0.0)
 }
 
 
@@ -50,8 +47,9 @@ SEARCH_TURN = np.deg2rad(20)
 
 MAX_STEPS = 30
 
-INITIAL_UPDATES_PER_OBSERVATION = 3
 INITIAL_POSITION_STD_CM = 15.0
+INITIAL_THETA_STD = np.deg2rad(10)
+CONFIDENT_FRAMES_REQUIRED = 3
 MAX_INITIALIZATION_STEPS = 72
 
 
@@ -71,16 +69,17 @@ particles = initialize_particles()
 # --------------------------------------------------
 
 def get_goal():
-    x1, y1 = landmarks[BOX_A]
-    x2, y2 = landmarks[BOX_B]
+    positions = list(landmarks.values())
+
+    x1, y1 = positions[0]
+    x2, y2 = positions[1]
 
     goal_x = (x1 + x2) / 2
     goal_y = (y1 + y2) / 2
-
     return goal_x, goal_y
 
 
-def observe(particles, update_count=1):
+def observe(particles):
 
     frame = cam.get_next_frame()
 
@@ -98,18 +97,17 @@ def observe(particles, update_count=1):
 
     print("Measurements:")
 
-    for i in range(len(object_ids)):
-        marker_id = int(object_ids[i])
+    for marker_id, distance, angle in zip(object_ids, distances, angles):
+        marker_id = int(marker_id)
 
         if marker_id in landmarks:
             print(
                 f"  ID={marker_id}, "
-                f"distance={distances[i]:.1f} cm, "
-                f"angle={np.degrees(angles[i]):.1f} deg"
+                f"distance={distance:.1f} cm, "
+                f"angle={np.degrees(angle):.1f} deg"
             )
 
-    for _ in range(update_count):
-        particles = mcl_update(particles, object_ids, distances, angles, landmarks)
+    particles = mcl_update(particles, object_ids, distances, angles, landmarks)
 
     return particles, observed_ids
 
@@ -117,10 +115,14 @@ def observe(particles, update_count=1):
 def particle_spread(particles):
     std_x = np.std([p.getX() for p in particles])
     std_y = np.std([p.getY() for p in particles])
-    mean_cos = np.mean([np.cos(p.getTheta()) for p in particles])
-    mean_sin = np.mean([np.sin(p.getTheta()) for p in particles])
+
+    # Circular standard deviation handles angles around 0/360 degrees.
+    angles = [p.getTheta() for p in particles]
+    mean_cos = np.mean(np.cos(angles))
+    mean_sin = np.mean(np.sin(angles))
     resultant_length = np.clip(np.hypot(mean_cos, mean_sin), 1e-12, 1.0)
     std_theta = np.sqrt(-2.0 * np.log(resultant_length))
+
     return std_x, std_y, std_theta
 
 
@@ -161,28 +163,39 @@ def drive_robot(particles, distance):
 def initialize_localization(particles):
     required_ids = set(landmarks)
     observed_ids = set()
+    confident_frames = 0
 
     print("Initializing localization")
 
     for initialization_step in range(MAX_INITIALIZATION_STEPS):
-        particles, current_ids = observe(particles, INITIAL_UPDATES_PER_OBSERVATION)
+        particles, current_ids = observe(particles)
         observed_ids.update(current_ids)
 
         std_x, std_y, std_theta = particle_spread(particles)
+        all_landmarks_seen = required_ids.issubset(observed_ids)
+        position_confident = std_x < INITIAL_POSITION_STD_CM and std_y < INITIAL_POSITION_STD_CM
+        heading_confident = std_theta < INITIAL_THETA_STD
+
+        # Count only new frames with a known landmark measurement.
+        if current_ids and all_landmarks_seen and position_confident and heading_confident:
+            confident_frames += 1
+        else:
+            confident_frames = 0
+
         print(
             f"Initialization {initialization_step + 1}: "
             f"seen={sorted(observed_ids)}, std_x={std_x:.1f} cm, "
-            f"std_y={std_y:.1f} cm, std_theta={np.degrees(std_theta):.1f} deg"
+            f"std_y={std_y:.1f} cm, std_theta={np.degrees(std_theta):.1f} deg, "
+            f"confident_frames={confident_frames}/{CONFIDENT_FRAMES_REQUIRED}"
         )
 
-        all_landmarks_seen = required_ids.issubset(observed_ids)
-        position_confident = std_x < INITIAL_POSITION_STD_CM and std_y < INITIAL_POSITION_STD_CM
-
-        if all_landmarks_seen and position_confident:
+        if confident_frames >= CONFIDENT_FRAMES_REQUIRED:
             print("Localization initialized")
             return particles
 
-        turn_robot(particles, SEARCH_TURN)
+        # Stay still while confirming confidence with fresh frames.
+        if confident_frames == 0:
+            turn_robot(particles, SEARCH_TURN)
         time.sleep(0.2)
 
     raise RuntimeError("Could not initialize localization with sufficient confidence")
@@ -255,7 +268,7 @@ try:
         # 6. Search only after checking the propagated pose
         # --------------------------------------------------
 
-        if not observed_ids:
+        if not observed_ids and distance_to_goal > 50:
             print("Searching for landmark")
             turn_robot(particles, SEARCH_TURN)
             time.sleep(0.2)
