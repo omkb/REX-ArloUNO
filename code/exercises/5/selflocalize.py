@@ -67,7 +67,8 @@ def isRunningOnArlo():
     """
     return socket.gethostname() == 'protoarlo'
 
-showGUI = not isRunningOnArlo()  # Only open GUI windows when not on the robot
+showCamera = not isRunningOnArlo()  # Camera stream is too heavy for SSH X forwarding
+showWorld = not isRunningOnArlo() or 'DISPLAY' in os.environ  # On Arlo, only with X forwarding
 
 # Some color constants in BGR format
 CRED = (0, 0, 255)
@@ -184,12 +185,13 @@ def drive_step(arlo, pose, target,
 # Main program #
 cam = None
 try:
-    if showGUI:
-        # Open windows
+    # Open windows
+    if showCamera:
         WIN_RF1 = "Robot view"
         cv2.namedWindow(WIN_RF1)
         cv2.moveWindow(WIN_RF1, 50, 50)
 
+    if showWorld:
         WIN_World = "World view"
         cv2.namedWindow(WIN_World)
         cv2.moveWindow(WIN_World, 500, 50)
@@ -276,13 +278,13 @@ try:
         est_pose = particle.estimate_pose(particles) # The estimate of the robots current pose
 
             
-        if showGUI:
-    
-            # Draw map
-            draw_world(est_pose, particles, world)
-            
+        if showCamera:
             # Show frame
             cv2.imshow(WIN_RF1, colour)
+
+        if showWorld:
+            # Draw map
+            draw_world(est_pose, particles, world)
 
             # Show world
             cv2.imshow(WIN_World, world)
