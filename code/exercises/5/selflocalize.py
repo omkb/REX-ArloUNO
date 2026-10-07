@@ -13,8 +13,6 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "lib"))
 
 import robot
 
-frame_counter = 0
-
 def normalize_angle(a):
     """Wrap angle to [-pi, pi]."""
     return (a + np.pi) % (2.0 * np.pi) - np.pi
@@ -274,15 +272,13 @@ try:
         # Draw map
         draw_world(est_pose, particles, world)
             
-        if showGUI and frame_counter % 10 == 0:
+        if showGUI:
     
             # Show frame
             cv2.imshow(WIN_RF1, colour)
 
             # Show world
             cv2.imshow(WIN_World, world)
-        
-        frame_counter += 1
         
         # Move robot in between the two landmarks
         lm1, lm2 = landmarks[landmarkIDs[0]], landmarks[landmarkIDs[1]]
