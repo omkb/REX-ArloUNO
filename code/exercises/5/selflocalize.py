@@ -134,6 +134,8 @@ def draw_world(est_pose, particles, world):
         ID = landmarkIDs[i]
         lm = (int(landmarks[ID][0] + offsetX), int(ymax - (landmarks[ID][1] + offsetY)))
         cv2.circle(world, lm, 5, landmark_colors[i], 2)
+        cv2.putText(world, str(ID), (lm[0] + 8, lm[1] - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, landmark_colors[i], 1, cv2.LINE_AA)
 
     # Draw estimated robot pose
     a = (int(est_pose.getX())+offsetX, ymax-(int(est_pose.getY())+offsetY))
