@@ -10,7 +10,6 @@ import socket
 from pathlib import Path
 
 # Flags
-showGUI = True  # Whether or not to open GUI windows
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "lib"))
 
@@ -67,6 +66,8 @@ def isRunningOnArlo():
       You can use this flag to switch the code from running on you laptop to Arlo - you need to do the programming here!
     """
     return socket.gethostname() == 'protoarlo'
+
+showGUI = not isRunningOnArlo()  # Only open GUI windows when not on the robot
 
 # Some color constants in BGR format
 CRED = (0, 0, 255)
