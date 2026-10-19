@@ -46,6 +46,7 @@ def move_particles(particles, dist, dtheta,
     y = y + dist * np.sin(th)
     th = th + dtheta
     sigma = min_sigma + alpha_d * abs(dist)
+    # Take distance into account when calculating heading because robot does not drive straight
     sigma_theta = min_sigma_th + alpha_th * abs(dtheta) + 0.01 * abs(dist)
     x += np.random.normal(0.0, sigma, n)
     y += np.random.normal(0.0, sigma, n)
