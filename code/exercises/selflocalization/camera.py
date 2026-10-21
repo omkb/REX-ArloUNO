@@ -3,7 +3,6 @@ import numpy as np
 import time
 import sys
 import threading
-from itertools import product
 import framebuffer
 
 
@@ -135,23 +134,17 @@ class Camera(object):
 
         # Set camera calibration info
         if robottype == 'arlo':
-
+            # 1640 x 1232 @ 30 FPS is the maximum video resolution for the Arlo camera
             self.imageSize = (1640, 1232)
 
-            f = 1288.37
+            self.intrinsic_matrix = np.asarray([1288.37, 0., self.imageSize[0] / 2.0, 0.,
+                1288.37, self.imageSize[1] / 2.0, 0., 0., 1.], dtype = np.float64)
 
-            cx = self.imageSize[0] / 2.0
-            cy = self.imageSize[1] / 2.0
+            self.intrinsic_matrix.shape = (3, 3)
 
-            self.intrinsic_matrix = np.array([
-                [f, 0.0, cx],
-                [0.0, f, cy],
-                [0.0, 0.0, 1.0]
-            ], dtype=np.float64)
-
-            self.distortion_coeffs = np.zeros(
-                5,
-                dtype=np.float64
+            self.distortion_coeffs = np.asarray(
+                [0., 0., 2.0546093607192093e-02, -3.5538453075048249e-03, 0.],
+                dtype = np.float64
             )
         elif robottype == 'frindo':
             self.imageSize = (640, 480)
@@ -283,7 +276,7 @@ class Camera(object):
         # Initialize aruco detector
         self.arucoDict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
         # Set the correct physical marker size here
-        self.arucoMarkerLength = 0.144  # [m] actual size of aruco markers (in object coordinate system)
+        self.arucoMarkerLength = 0.15  # [m] actual size of aruco markers (in object coordinate system)
         
         # Initialize worker thread and framebuffer
         if self.useCaptureThread:
@@ -362,7 +355,7 @@ class Camera(object):
 
 
         if not isinstance(self.ids, type(None)):
-            dists = np.sqrt(self.tvecs[:, 0, 0]**2 + self.tvecs[:, 0, 2]**2) * 100
+            dists = np.linalg.norm(self.tvecs, axis=len(self.tvecs.shape) - 1) * 100
             # Make sure we always return properly shaped arrays
             dists = dists.reshape((dists.shape[0],))
             ids = self.ids.reshape((self.ids.shape[0],))
@@ -388,77 +381,6 @@ class Camera(object):
             ids = None
             angles = None
         return ids, dists, angles
-
-
-    def detect_aruco_box_centers(self, img, marker_to_center_offsets_cm):
-        """Return one box-center observation per marker ID.
-
-        ``marker_to_center_offsets_cm`` contains the possible perpendicular
-        distances from a marker plane to the box center. When multiple
-        sides with the same ID are visible, the offset combination whose
-        center estimates agree best is used. With one visible side, the
-        mean offset is used because its face type is geometrically ambiguous.
-        """
-        self.aruco_corners, self.ids, _ = cv2.aruco.detectMarkers(img, self.arucoDict)
-
-        if self.ids is None:
-            self.rvecs = None
-            self.tvecs = None
-            return None, None, None
-
-        self.rvecs, self.tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-            self.aruco_corners,
-            self.arucoMarkerLength,
-            self.intrinsic_matrix,
-            self.distortion_coeffs
-        )
-
-        offsets = np.atleast_1d(marker_to_center_offsets_cm).astype(float)
-        center_candidates_by_id = {}
-
-        for marker_id, rvec, tvec in zip(self.ids.reshape(-1), self.rvecs, self.tvecs):
-            rotation_matrix, _ = cv2.Rodrigues(rvec.reshape(3))
-            outward_normal = rotation_matrix[:, 2]
-            marker_position_cm = tvec.reshape(3) * 100.0
-            center_candidates = [marker_position_cm - offset * outward_normal for offset in offsets]
-            center_candidates_by_id.setdefault(int(marker_id), []).append(center_candidates)
-
-        grouped_ids = []
-        grouped_distances = []
-        grouped_angles = []
-
-        for marker_id, detections in center_candidates_by_id.items():
-            if len(detections) == 1:
-                center = np.mean(np.asarray(detections[0]), axis=0)
-            else:
-                best_center = None
-                best_score = np.inf
-
-                for offset_indices in product(range(len(offsets)), repeat=len(detections)):
-                    centers = np.asarray([
-                        detection[offset_index]
-                        for detection, offset_index in zip(detections, offset_indices)
-                    ])
-                    candidate_center = np.median(centers, axis=0)
-                    planar_errors = centers[:, [0, 2]] - candidate_center[[0, 2]]
-                    score = np.sum(planar_errors ** 2)
-
-                    if score < best_score:
-                        best_score = score
-                        best_center = candidate_center
-
-                center = best_center
-
-            x, z = center[0], center[2]
-            grouped_ids.append(marker_id)
-            grouped_distances.append(np.hypot(x, z))
-            grouped_angles.append(-np.arctan2(x, z))
-
-        return (
-            np.asarray(grouped_ids, dtype=int),
-            np.asarray(grouped_distances, dtype=float),
-            np.asarray(grouped_angles, dtype=float)
-        )
 
 
     def draw_aruco_objects(self, img):
