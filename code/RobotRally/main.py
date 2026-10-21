@@ -19,13 +19,17 @@ from camera import Camera
 
 # Coordinates in cm. These describe the schematic square; correct them to
 # the actual *observed ArUco marker centres* before relying on localization.
-# Marker IDs in route order; the first marker is also the starting landmark.
-LANDMARK_IDS = [7, 3, 6, 11]
-LANDMARKS = dict(zip(LANDMARK_IDS, [
-    (0.0, 0.0), (0.0, 300.0), (400.0, 0.0), (400.0, 300.0)
-]))
-START_LANDMARK = LANDMARK_IDS[0]
-ROUTE = LANDMARK_IDS + [START_LANDMARK]
+# Landmark name -> (ArUco marker ID, (x, y)). Route goes L1, L2, L3, L4, L1.
+LANDMARKS = {
+    'L1': (7, (0.0, 0.0)),
+    'L2': (3, (0.0, 300.0)),
+    'L3': (6, (400.0, 0.0)),
+    'L4': (11, (400.0, 300.0)),
+}
+LANDMARK_BY_MARKER = {marker_id: name for name, (marker_id, _) in LANDMARKS.items()}
+POSITIONS = {name: position for name, (_, position) in LANDMARKS.items()}
+START_LANDMARK = 'L1'
+ROUTE = list(LANDMARKS) + [START_LANDMARK]
 
 SCAN_STEP_DEG = 10
 SCAN_SETTLE_S = 0.25
@@ -45,23 +49,22 @@ streamer = None
 
 
 def observations(camera):
-    """Read one image and return known markers as {id: (cm, bearing_rad)}."""
+    """Read one image and return known landmarks as {name: (cm, bearing_rad)}."""
     ids, distances, angles = camera.detect_aruco_objects(camera.get_next_frame())
     if ids is None:
         return {}
     obs = {}
     for marker_id, distance, angle in zip(ids, distances, angles):
-        marker_id = int(marker_id)
-        if marker_id in LANDMARKS:
-            if marker_id not in obs or distance < obs[marker_id][0]:
-                obs[marker_id] = (float(distance), float(angle))
+        name = LANDMARK_BY_MARKER.get(int(marker_id))
+        if name is not None and (name not in obs or distance < obs[name][0]):
+            obs[name] = (float(distance), float(angle))
     return obs
 
 
 def draw_map(particles, weights, target=None):
     """Draw landmarks, particles and the pose estimate (BGR image, y-axis up)."""
-    xs = [p[0] for p in LANDMARKS.values()]
-    ys = [p[1] for p in LANDMARKS.values()]
+    xs = [p[0] for p in POSITIONS.values()]
+    ys = [p[1] for p in POSITIONS.values()]
     min_x, min_y = min(xs) - MAP_MARGIN_PX, min(ys) - MAP_MARGIN_PX
     width = int(max(xs) - min_x + MAP_MARGIN_PX)
     height = int(max(ys) - min_y + MAP_MARGIN_PX)
@@ -70,11 +73,11 @@ def draw_map(particles, weights, target=None):
     def px(x, y):
         return int(x - min_x), int(height - (y - min_y))
 
-    for marker_id, (lx, ly) in LANDMARKS.items():
-        colour = (0, 0, 255) if marker_id == target else (0, 160, 0)
+    for name, (marker_id, (lx, ly)) in LANDMARKS.items():
+        colour = (0, 0, 255) if name == target else (0, 160, 0)
         centre = px(lx, ly)
         cv2.circle(world, centre, 8, colour, 2)
-        cv2.putText(world, str(marker_id), (centre[0] + 10, centre[1] - 10),
+        cv2.putText(world, f"{name} ({marker_id})", (centre[0] + 10, centre[1] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 1, cv2.LINE_AA)
 
     if particles is None:
@@ -139,7 +142,7 @@ def drive(arlo, particles, distance_cm):
 
 def update_localization(camera, particles, weights, target=None):
     obs = observations(camera)
-    if obs and mcl.measurement_update(particles, weights, obs, LANDMARKS):
+    if obs and mcl.measurement_update(particles, weights, obs, POSITIONS):
         particles, weights = mcl.resample(particles, weights)
     publish_map(particles, weights, target)
     return obs, particles, weights
@@ -184,12 +187,12 @@ def initialize(arlo, camera):
                 print(f"Detected landmarks: {list(obs.keys())}")
                 if START_LANDMARK in obs:
                     particles, weights = mcl.initialize_from_landmark(
-                        LANDMARKS, START_LANDMARK, *obs[START_LANDMARK]
+                        POSITIONS, START_LANDMARK, *obs[START_LANDMARK]
                     )
                     # The starting landmark is already included in initialization.
                     obs = {i: value for i, value in obs.items() if i != START_LANDMARK}
                     if obs:
-                        mcl.measurement_update(particles, weights, obs, LANDMARKS)
+                        mcl.measurement_update(particles, weights, obs, POSITIONS)
                         particles, weights = mcl.resample(particles, weights)
                 publish_map(particles, weights)
             else:
@@ -219,14 +222,14 @@ def visit_target(arlo, camera, particles, weights, target):
         _, particles, weights = update_localization(camera, particles, weights)
         x, y, theta = mcl.pose_estimate(particles, weights)
         target_bearing, target_distance = navigation.direction_to_target(
-            x, y, theta, *LANDMARKS[target]
+            x, y, theta, *POSITIONS[target]
         )
         spread = mcl.position_spread_cm(particles, weights)
-        print(f"L{target}: pose=({x:.0f}, {y:.0f}, {math.degrees(theta):.0f}°), "
+        print(f"{target}: pose=({x:.0f}, {y:.0f}, {math.degrees(theta):.0f}°), "
               f"dist={target_distance:.0f} cm, spread={spread:.0f} cm")
 
         if target_distance <= TARGET_DISTANCE_CM and spread <= MAX_POSITION_SPREAD_CM:
-            print(f"Reached L{target}")
+            print(f"Reached {target}")
             return particles, weights
 
         action = choose_action(arlo, DRIVE_STEP_CM, failed_action)
@@ -257,7 +260,7 @@ def main():
         return
 
     print('CHECK: marker centres, sonar directions, turn sign and camera calibration.')
-    input(f'Clear the area, point robot at L{START_LANDMARK}, then press Enter to START...')
+    input(f'Clear the area, point robot at {START_LANDMARK}, then press Enter to START...')
     arlo = Arlo()
     camera = None
     if STREAM_MAP:
@@ -267,11 +270,9 @@ def main():
         camera = Camera(0, robottype='arlo', useCaptureThread=False)
         print('Initialising localization...')
         particles, weights = initialize(arlo, camera)
-        for landmark_id in ROUTE:
-            print(f'Next target: L{landmark_id}')
-            particles, weights = visit_target(
-                arlo, camera, particles, weights, landmark_id
-            )
+        for target in ROUTE:
+            print(f'Next target: {target} (marker {LANDMARKS[target][0]})')
+            particles, weights = visit_target(arlo, camera, particles, weights, target)
         print('Route finished')
     except KeyboardInterrupt:
         print('Interrupted')
