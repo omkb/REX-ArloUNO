@@ -7,6 +7,10 @@ import argparse
 import math
 import time
 
+import cv2
+import numpy as np
+
+import mapstream
 import mcl
 import navigation
 import obstacles
@@ -32,6 +36,13 @@ TURN_SPEED_DEG_S = 60.0
 TURN_TOLERANCE_DEG = 12.0
 TARGET_DISTANCE_CM = 45.0    # Reached when the estimated position is within this distance
 
+STREAM_MAP = True             # Stream the particle map to http://<robot>:STREAM_PORT/
+STREAM_PORT = 8000
+MAP_MARGIN_PX = 100           # 1 px per cm, plus a margin around the landmarks
+MAP_MAX_DRAWN = 200           # Drawing all particles is slow on the Pi
+
+streamer = None
+
 
 def observations(camera):
     """Read one image and return known markers as {id: (cm, bearing_rad)}."""
@@ -45,6 +56,53 @@ def observations(camera):
             if marker_id not in obs or distance < obs[marker_id][0]:
                 obs[marker_id] = (float(distance), float(angle))
     return obs
+
+
+def draw_map(particles, weights, target=None):
+    """Draw landmarks, particles and the pose estimate (BGR image, y-axis up)."""
+    xs = [p[0] for p in LANDMARKS.values()]
+    ys = [p[1] for p in LANDMARKS.values()]
+    min_x, min_y = min(xs) - MAP_MARGIN_PX, min(ys) - MAP_MARGIN_PX
+    width = int(max(xs) - min_x + MAP_MARGIN_PX)
+    height = int(max(ys) - min_y + MAP_MARGIN_PX)
+    world = np.full((height, width, 3), 255, dtype=np.uint8)
+
+    def px(x, y):
+        return int(x - min_x), int(height - (y - min_y))
+
+    for marker_id, (lx, ly) in LANDMARKS.items():
+        colour = (0, 0, 255) if marker_id == target else (0, 160, 0)
+        centre = px(lx, ly)
+        cv2.circle(world, centre, 8, colour, 2)
+        cv2.putText(world, str(marker_id), (centre[0] + 10, centre[1] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 1, cv2.LINE_AA)
+
+    if particles is None:
+        return world
+
+    drawn = particles
+    if len(particles) > MAP_MAX_DRAWN:
+        drawn = particles[np.random.choice(len(particles), MAP_MAX_DRAWN, replace=False)]
+    for x, y, theta in drawn:
+        start = px(x, y)
+        cv2.circle(world, start, 2, (200, 120, 0), -1)
+        cv2.line(world, start, px(x + 10 * math.cos(theta), y + 10 * math.sin(theta)),
+                 (200, 120, 0), 1)
+
+    x, y, theta = mcl.pose_estimate(particles, weights)
+    start = px(x, y)
+    cv2.circle(world, start, 6, (0, 0, 0), 2)
+    cv2.line(world, start, px(x + 25 * math.cos(theta), y + 25 * math.sin(theta)),
+             (0, 0, 0), 2)
+    spread = mcl.position_spread_cm(particles, weights)
+    cv2.putText(world, f"({x:.0f}, {y:.0f}, {math.degrees(theta):.0f} deg) spread={spread:.0f} cm",
+                (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+    return world
+
+
+def publish_map(particles, weights, target=None):
+    if streamer is not None:
+        streamer.publish(draw_map(particles, weights, target))
 
 
 def sonar(arlo, direction):
@@ -79,10 +137,11 @@ def drive(arlo, particles, distance_cm):
     return True
 
 
-def update_localization(camera, particles, weights):
+def update_localization(camera, particles, weights, target=None):
     obs = observations(camera)
     if obs and mcl.measurement_update(particles, weights, obs, LANDMARKS):
         particles, weights = mcl.resample(particles, weights)
+    publish_map(particles, weights, target)
     return obs, particles, weights
 
 
@@ -132,6 +191,7 @@ def initialize(arlo, camera):
                     if obs:
                         mcl.measurement_update(particles, weights, obs, LANDMARKS)
                         particles, weights = mcl.resample(particles, weights)
+                publish_map(particles, weights)
             else:
                 obs, particles, weights = update_localization(camera, particles, weights)
 
@@ -187,6 +247,7 @@ def visit_target(arlo, camera, particles, weights, target):
 
 
 def main():
+    global streamer
     parser = argparse.ArgumentParser()
     parser.add_argument('--run', action='store_true', help='Enable real robot motion')
     args = parser.parse_args()
@@ -199,6 +260,9 @@ def main():
     input(f'Clear the area, point robot at L{START_LANDMARK}, then press Enter to START...')
     arlo = Arlo()
     camera = None
+    if STREAM_MAP:
+        streamer = mapstream.MapStreamer(STREAM_PORT)
+        publish_map(None, None)
     try:
         camera = Camera(0, robottype='arlo', useCaptureThread=False)
         print('Initialising localization...')
@@ -216,6 +280,8 @@ def main():
         if camera is not None:
             camera.terminateCaptureThread()
             camera.get_capture().close() if hasattr(camera.get_capture(), 'close') else camera.get_capture().release()
+        if streamer is not None:
+            streamer.close()
 
 
 if __name__ == '__main__':
