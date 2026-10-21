@@ -25,8 +25,13 @@ LANDMARK_B = 5
 LANDMARK_DISTANCE = 170.0
 
 landmarks = {
+<<<<<<< HEAD
+    10: (0.0, 0.0),
+    6: (170.0, 0.0)
+=======
     LANDMARK_A: (0.0, 0.0),
     LANDMARK_B: (LANDMARK_DISTANCE, 0.0)
+>>>>>>> 16f3c575f27dddff1f84907de1375478af22a23d
 }
 
 
@@ -45,8 +50,15 @@ ANGLE_TOLERANCE = np.deg2rad(5)
 
 SEARCH_TURN = np.deg2rad(10)
 
+<<<<<<< HEAD
+INITIAL_POSITION_STD_CM = 15.0
+INITIAL_THETA_STD = np.deg2rad(10)
+CONFIDENT_FRAMES_REQUIRED = 3
+MAX_INITIALIZATION_STEPS = 72
+=======
 MAX_STEPS = 40
 MAX_INITIALIZATION_STEPS = 30
+>>>>>>> 16f3c575f27dddff1f84907de1375478af22a23d
 
 
 # --------------------------------------------------
@@ -64,7 +76,22 @@ particles = initialize_particles()
 # OBSERVATION
 # --------------------------------------------------
 
+<<<<<<< HEAD
+def get_goal():
+    positions = list(landmarks.values())
+
+    x1, y1 = positions[0]
+    x2, y2 = positions[1]
+
+    goal_x = (x1 + x2) / 2
+    goal_y = (y1 + y2) / 2
+    return goal_x, goal_y
+
+
+def observe(particles):
+=======
 def observe(particles, require_all_landmarks=False):
+>>>>>>> 16f3c575f27dddff1f84907de1375478af22a23d
 
     frame = cam.get_next_frame()
 
@@ -90,16 +117,41 @@ def observe(particles, require_all_landmarks=False):
         marker_id = int(marker_id)
 
         if marker_id in landmarks:
+<<<<<<< HEAD
+            print(
+                f"  ID={marker_id}, "
+                f"distance={distance:.1f} cm, "
+                f"angle={np.degrees(angle):.1f} deg"
+            )
+
+    particles = mcl_update(particles, object_ids, distances, angles, landmarks)
+=======
             print(f"  ID={marker_id}, " f"distance={distance:.1f} cm, " f"angle={np.degrees(angle):.1f} deg")
 
     # Initialization needs all landmarks in this frame before updating MCL.
     if require_all_landmarks and not set(landmarks).issubset(observed_ids):
         return particles, observed_ids
+>>>>>>> 16f3c575f27dddff1f84907de1375478af22a23d
 
     particles = mcl_update(particles, object_ids, distances, angles, landmarks)
 
     return particles, observed_ids
 
+<<<<<<< HEAD
+def particle_spread(particles):
+    std_x = np.std([p.getX() for p in particles])
+    std_y = np.std([p.getY() for p in particles])
+
+    # Circular standard deviation handles angles around 0/360 degrees.
+    angles = [p.getTheta() for p in particles]
+    mean_cos = np.mean(np.cos(angles))
+    mean_sin = np.mean(np.sin(angles))
+    resultant_length = np.clip(np.hypot(mean_cos, mean_sin), 1e-12, 1.0)
+    std_theta = np.sqrt(-2.0 * np.log(resultant_length))
+
+    return std_x, std_y, std_theta
+=======
+>>>>>>> 16f3c575f27dddff1f84907de1375478af22a23d
 
 # --------------------------------------------------
 # ROBOT MOVEMENT
@@ -144,6 +196,42 @@ def drive_robot(particles, distance):
 def initialize_localization(particles):
 
     required_ids = set(landmarks)
+<<<<<<< HEAD
+    observed_ids = set()
+    confident_frames = 0
+
+    print("Initializing localization")
+
+    for initialization_step in range(MAX_INITIALIZATION_STEPS):
+        particles, current_ids = observe(particles)
+        observed_ids.update(current_ids)
+
+        std_x, std_y, std_theta = particle_spread(particles)
+        all_landmarks_seen = required_ids.issubset(observed_ids)
+        position_confident = std_x < INITIAL_POSITION_STD_CM and std_y < INITIAL_POSITION_STD_CM
+        heading_confident = std_theta < INITIAL_THETA_STD
+
+        # Count only new frames with a known landmark measurement.
+        if current_ids and all_landmarks_seen and position_confident and heading_confident:
+            confident_frames += 1
+        else:
+            confident_frames = 0
+
+        print(
+            f"Initialization {initialization_step + 1}: "
+            f"seen={sorted(observed_ids)}, std_x={std_x:.1f} cm, "
+            f"std_y={std_y:.1f} cm, std_theta={np.degrees(std_theta):.1f} deg, "
+            f"confident_frames={confident_frames}/{CONFIDENT_FRAMES_REQUIRED}"
+        )
+
+        if confident_frames >= CONFIDENT_FRAMES_REQUIRED:
+            print("Localization initialized")
+            return particles
+
+        # Stay still while confirming confidence with fresh frames.
+        if confident_frames == 0:
+            turn_robot(particles, SEARCH_TURN)
+=======
 
     print("Initializing localization")
 
@@ -161,6 +249,7 @@ def initialize_localization(particles):
         # Look for the other landmark.
         turn_robot(particles, SEARCH_TURN, speed_degs=INITIAL_SEARCH_TURN_SPEED)
 
+>>>>>>> 16f3c575f27dddff1f84907de1375478af22a23d
         time.sleep(0.2)
 
     raise RuntimeError("Could not find both landmarks in the same frame")
@@ -227,6 +316,10 @@ try:
         # For the final step, use the estimated pose to turn and drive to goal.
         if not observed_ids and distance_to_goal > STEP_DISTANCE:
 
+<<<<<<< HEAD
+        if not observed_ids and distance_to_goal > 50:
+=======
+>>>>>>> 16f3c575f27dddff1f84907de1375478af22a23d
             print("Searching for landmark")
 
             turn_robot(particles, SEARCH_TURN)

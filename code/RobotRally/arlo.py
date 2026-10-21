@@ -138,7 +138,7 @@ class Arlo(object):
         def send_pwm(pwm):
             nonlocal last_pwm
             if pwm != last_pwm:
-                print(f"  -> pwm={pwm}")
+                #print(f"  -> pwm={pwm}")
                 self.robot.go_diff(pwm, pwm, direction, direction)
                 last_pwm = pwm
 
@@ -281,7 +281,7 @@ class Arlo(object):
         def send_pwm(pwm):
             nonlocal last_pwm
             if pwm != last_pwm:
-                print(f"  -> pwm={pwm}")
+                #print(f"  -> pwm={pwm}")
                 self.robot.go_diff(pwm, pwm, dir_left, dir_right)
                 last_pwm = pwm
 
