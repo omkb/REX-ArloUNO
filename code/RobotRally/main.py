@@ -15,9 +15,13 @@ from camera import Camera
 
 # Coordinates in cm. These describe the schematic square; correct them to
 # the actual *observed ArUco marker centres* before relying on localization.
-LANDMARKS = {1: (0.0, 0.0), 2: (0.0, 300.0),
-             3: (400.0, 0.0), 4: (400.0, 300.0)}
-ROUTE = [1, 2, 3, 4, 1]
+# Marker IDs in route order; the first marker is also the starting landmark.
+LANDMARK_IDS = [7, 3, 6, 11]
+LANDMARKS = dict(zip(LANDMARK_IDS, [
+    (0.0, 0.0), (0.0, 300.0), (400.0, 0.0), (400.0, 300.0)
+]))
+START_LANDMARK = LANDMARK_IDS[0]
+ROUTE = LANDMARK_IDS + [START_LANDMARK]
 
 SCAN_STEP_DEG = 10
 SCAN_SETTLE_S = 0.25
@@ -26,7 +30,7 @@ DRIVE_STEP_CM = 15.0
 DRIVE_SPEED_CMS = 20.0
 TURN_SPEED_DEG_S = 60.0
 TURN_TOLERANCE_DEG = 12.0
-TARGET_MARKER_CM = 45.0       # Camera-to-marker distance, NOT official box-side distance
+TARGET_DISTANCE_CM = 45.0    # Reached when the estimated position is within this distance
 
 
 def observations(camera):
@@ -110,7 +114,7 @@ def reposition(arlo, particles, failed_action):
 
 
 def initialize(arlo, camera):
-    """Initialize from L1 and another landmark; restart after repositioning."""
+    """Initialize from the starting landmark and another; restart after repositioning."""
     particles = weights = None
     seen_second = False
     failed_action = None
@@ -118,10 +122,13 @@ def initialize(arlo, camera):
         for _ in range(360 // SCAN_STEP_DEG):
             if particles is None:
                 obs = observations(camera)
-                if 1 in obs:
-                    particles, weights = mcl.initialize_from_landmark(LANDMARKS, 1, *obs[1])
-                    # L1 is already included in initialization.
-                    obs = {i: value for i, value in obs.items() if i != 1}
+                print(f"Detected landmarks: {list(obs.keys())}")
+                if START_LANDMARK in obs:
+                    particles, weights = mcl.initialize_from_landmark(
+                        LANDMARKS, START_LANDMARK, *obs[START_LANDMARK]
+                    )
+                    # The starting landmark is already included in initialization.
+                    obs = {i: value for i, value in obs.items() if i != START_LANDMARK}
                     if obs:
                         mcl.measurement_update(particles, weights, obs, LANDMARKS)
                         particles, weights = mcl.resample(particles, weights)
@@ -129,7 +136,7 @@ def initialize(arlo, camera):
                 obs, particles, weights = update_localization(camera, particles, weights)
 
             if particles is not None:
-                seen_second = seen_second or any(i != 1 for i in obs)
+                seen_second = seen_second or any(i != START_LANDMARK for i in obs)
                 spread = mcl.position_spread_cm(particles, weights)
                 if seen_second and obs and spread <= MAX_POSITION_SPREAD_CM:
                     print(f"Localization ready; spread={spread:.1f} cm")
@@ -145,12 +152,11 @@ def initialize(arlo, camera):
 
 
 def visit_target(arlo, camera, particles, weights, target):
-    """Navigate continuously; only a recent camera sighting permits a blind finish."""
-    remaining_approach = None
+    """Drive towards the target using MCL; the marker need not be visible."""
     failed_action = None
     detouring = False
     while True:
-        obs, particles, weights = update_localization(camera, particles, weights)
+        _, particles, weights = update_localization(camera, particles, weights)
         x, y, theta = mcl.pose_estimate(particles, weights)
         target_bearing, target_distance = navigation.direction_to_target(
             x, y, theta, *LANDMARKS[target]
@@ -159,51 +165,25 @@ def visit_target(arlo, camera, particles, weights, target):
         print(f"L{target}: pose=({x:.0f}, {y:.0f}, {math.degrees(theta):.0f}°), "
               f"dist={target_distance:.0f} cm, spread={spread:.0f} cm")
 
-        if spread > MAX_POSITION_SPREAD_CM:
-            remaining_approach = None
-        if target in obs:
-            target_distance, target_bearing = obs[target]
-            if target_distance <= TARGET_MARKER_CM:
-                print(f"Reached L{target} (marker distance {target_distance:.0f} cm)")
-                return particles, weights
-            remaining_approach = None
-            if (target_distance <= TARGET_MARKER_CM + DRIVE_STEP_CM
-                    and abs(math.degrees(target_bearing)) <= TURN_TOLERANCE_DEG
-                    and spread <= MAX_POSITION_SPREAD_CM):
-                remaining_approach = target_distance - TARGET_MARKER_CM
-        elif remaining_approach is not None:
-            # At most one short straight segment, anchored to the last sighting.
-            if remaining_approach <= 1e-6:
-                print(f"Reached L{target} (last camera sighting + motion model)")
-                return particles, weights
-            target_distance = TARGET_MARKER_CM + remaining_approach
-            target_bearing = 0.0
+        if target_distance <= TARGET_DISTANCE_CM and spread <= MAX_POSITION_SPREAD_CM:
+            print(f"Reached L{target}")
+            return particles, weights
 
-        step = DRIVE_STEP_CM
-        if target in obs or remaining_approach is not None:
-            step = min(step, target_distance - TARGET_MARKER_CM)
-
-        action = choose_action(arlo, step, failed_action)
+        action = choose_action(arlo, DRIVE_STEP_CM, failed_action)
         if action != 'forward':
-            remaining_approach = None
             detouring = True
             success = avoid_obstacle(arlo, particles, action)
             failed_action = None if success else action
             continue
 
         if not detouring and abs(math.degrees(target_bearing)) > TURN_TOLERANCE_DEG:
-            remaining_approach = None
             turn(arlo, particles, max(-30.0, min(30.0, math.degrees(target_bearing))))
             failed_action = None
         else:
-            success = drive(arlo, particles, step)
+            success = drive(arlo, particles, DRIVE_STEP_CM)
             failed_action = None if success else 'forward'
             if success:
                 detouring = False
-                if remaining_approach is not None:
-                    remaining_approach -= step
-            else:
-                remaining_approach = None
 
 
 def main():
@@ -216,7 +196,7 @@ def main():
         return
 
     print('CHECK: marker centres, sonar directions, turn sign and camera calibration.')
-    input('Clear the area, point robot at L1, then press Enter to START...')
+    input(f'Clear the area, point robot at L{START_LANDMARK}, then press Enter to START...')
     arlo = Arlo()
     camera = None
     try:
