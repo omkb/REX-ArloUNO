@@ -17,10 +17,10 @@ LANDMARKS = {2: (0, 0), 6: (0, 300), 7: (400, 0), 5: (400, 300)}
 ROUTE = [2, 6, 7, 5, 2]
 
 MAX_SPREAD_CM = 20
-TARGET_DISTANCE_CM = 50  # Approximation; calibrate against 40 cm from nearest box face
+TARGET_DISTANCE_CM = 53  # Approximation; calibrate against 40 cm from nearest box face
 DRIVE_STEP_CM = 40
 TURN_STEP_DEG = 10
-CLEAR_TURN_DEG = 25
+CLEAR_TURN_DEG = 65
 DRIVE_SPEED = 30
 TURN_SPEED = 60
 SLOW_DRIVE_SPEED = 10  # Speed near obstacles (cm/s)
@@ -66,40 +66,49 @@ def turn(arlo, particles, degrees):
         mcl.motion_update(particles, delta_rot_rad=math.radians(degrees))
     return True
 
-
-def drive(arlo, particles, distance_cm):
-    """Drive a short step, interrupting if sonar becomes unsafe."""
-    direction = "front" if distance_cm > 0 else "back"
-
-    readings = sonar(arlo)
-    sensor_value = readings[direction]
-
-    if sensor_value is None or sensor_value <= obstacles.CLEARANCE_MM + abs(distance_cm) * 10:
+def drive(arlo, particles, distance_cm, camera=None, target=None):
+    """Drive while monitoring sonar and checking for the target landmark."""
+    if distance_cm == 0:
         return 0.0
 
-    # Also check diagonal sensors when driving forward
+    direction = "front" if distance_cm > 0 else "back"
+    readings = sonar(arlo)
+
+    if (readings[direction] is None or
+            readings[direction] <= obstacles.CLEARANCE_MM + abs(distance_cm) * 10):
+        return 0.0
+
     if distance_cm > 0:
         if any(readings[s] is None or readings[s] <= obstacles.CLEARANCE_MM
                for s in ("left", "right")):
             return 0.0
 
-    wheel_direction = Direction.FORWARD if distance_cm > 0 else Direction.BACKWARD
+    # Slow down if an obstacle is within 50 cm
     speed = DRIVE_SPEED
+    if distance_cm > 0 and any(
+        readings[s] is not None and readings[s] < SLOW_DISTANCE_MM
+        for s in ("front", "left", "right")
+    ):
+        speed = SLOW_DRIVE_SPEED
 
-    if distance_cm > 0:
-        if any(
-            readings[s] is not None and readings[s] < SLOW_DISTANCE_MM
-            for s in ("front", "left", "right")
-        ):
-            speed = SLOW_DRIVE_SPEED
-
-    handle = arlo.drive(wheel_direction, speed, distance_cm=abs(distance_cm), debug=False)
+    wheel_direction = Direction.FORWARD if distance_cm > 0 else Direction.BACKWARD
+    handle = arlo.drive(
+        wheel_direction, speed, distance_cm=abs(distance_cm), debug=False
+    )
 
     halted = False
+    reached_target = False
+    last_camera_check = time.monotonic()
+    last_log = time.monotonic()
+
     while handle.is_alive():
         readings = sonar(arlo)
 
-        blocked = readings[direction] is None or readings[direction] <= obstacles.CLEARANCE_MM
+        # Sonar safety
+        blocked = (
+            readings[direction] is None
+            or readings[direction] <= obstacles.CLEARANCE_MM
+        )
 
         if distance_cm > 0:
             blocked |= any(
@@ -112,6 +121,41 @@ def drive(arlo, particles, distance_cm):
             handle.halt("obstacle")
             halted = True
             break
+
+        # Print nearby obstacles occasionally
+        now = time.monotonic()
+        if now - last_log >= 0.3:
+            if any(readings[s] is not None and readings[s] < 1000
+                   for s in ("front", "left", "right")):
+                print(
+                    f"Sonar: F={readings['front']} "
+                    f"L={readings['left']} R={readings['right']} mm"
+                )
+            last_log = now
+
+        # Check camera every 0.5 seconds while driving forward
+        if distance_cm > 0 and camera is not None and target is not None:
+            if now - last_camera_check >= 0.5:
+                last_camera_check = now
+
+                ids, distances, angles = camera.detect_aruco_objects(
+                    camera.get_next_frame()
+                )
+
+                if ids is not None:
+                    for marker_id, marker_distance in zip(ids, distances):
+                        if marker_id == target and marker_distance <= 40:
+                            print(
+                                f"Reached L{target} "
+                                f"(camera: {marker_distance:.0f} cm)"
+                            )
+                            handle.halt("target reached")
+                            halted = True
+                            reached_target = True
+                            break
+
+                if reached_target:
+                    break
 
         time.sleep(0.05)
 
@@ -126,30 +170,36 @@ def drive(arlo, particles, distance_cm):
     return distance
 
 def avoid(arlo, particles):
-    """Back up if necessary, turn away, then drive around the obstacle."""
-
+    """Create space, turn away from obstacle, and continue."""
     readings = sonar(arlo)
-    direction = 1 if readings["left"] > readings["right"] else -1
+    direction = 1 if (readings["left"] or 0) > (readings["right"] or 0) else -1
 
-    # Back up until there is room to turn
-    while not obstacles.can_turn(**sonar(arlo)):
-        print("Too close to turn, backing up")
+    print(
+        f"Avoidance: left={readings['left']} mm, "
+        f"right={readings['right']} mm "
+        f"-> choosing {'LEFT' if direction == 1 else 'RIGHT'}"
+    )
+
+    for _ in range(8):
+        readings = sonar(arlo)
+
+        if obstacles.can_turn(**readings):
+            if turn(arlo, particles, direction * CLEAR_TURN_DEG):
+                readings = sonar(arlo)
+
+                if obstacles.choose_action(**readings, distance_cm=20) == "forward":
+                    if drive(arlo, particles, 40) >= 40:
+                        return True
+                continue
+
+        # Cannot turn safely: create more room
+        print("Cannot turn, backing up:", readings)
 
         if drive(arlo, particles, -10) >= 0:
-            print("Backing failed:", sonar(arlo))
+            print("Backing blocked:", sonar(arlo))
             return False
 
-    # Turn away from the obstacle
-    while True:
-        if not turn(arlo, particles, direction * CLEAR_TURN_DEG):
-            print("Turning failed:", sonar(arlo))
-            return False
-
-        # Only finish avoidance after a successful forward movement
-        readings = sonar(arlo)
-        if obstacles.choose_action(**readings, distance_cm=20) == "forward":
-            if drive(arlo, particles, 20) >= 20:
-                return True
+    return False
 
 def initialize(arlo, camera):
     """Start from L1, find a second landmark, then require a small spread."""
@@ -216,15 +266,17 @@ def follow_route(arlo, camera, particles, weights):
     for target in ROUTE:
         print(f"Next target: L{target}")
         while True:
-            _, particles, weights = update(camera, particles, weights)
+            obs, particles, weights = update(camera, particles, weights)
             particles, weights = relocalize(arlo, camera, particles, weights)
 
             x, y, theta = mcl.pose_estimate(particles, weights)
             bearing, distance = navigation.direction_to_target(x, y, theta, *LANDMARKS[target])
             print(f"L{target}: distance={distance:.0f} cm, spread={mcl.position_spread_cm(particles, weights):.0f} cm")
 
-            if distance <= TARGET_DISTANCE_CM:
-                print(f"Reached L{target}")
+            camera_distance = obs[target][0] if target in obs else float("inf")
+
+            if distance <= TARGET_DISTANCE_CM or camera_distance <= 45:
+                print(f"Reached L{target} (MCL={distance:.0f} cm, camera={camera_distance:.0f} cm)")
                 break
 
             if abs(math.degrees(bearing)) > 12:
@@ -241,7 +293,7 @@ def follow_route(arlo, camera, particles, weights):
 
             step = min(max_step, distance - TARGET_DISTANCE_CM)
             if obstacles.choose_action(**sonar(arlo), distance_cm=step) == "forward":
-                if drive(arlo, particles, step) > 0:
+                if drive(arlo, particles, step, camera=camera, target=target) > 0:
                     continue
             if not avoid(arlo, particles):
                 raise RuntimeError("Cannot maneuver around obstacle")
