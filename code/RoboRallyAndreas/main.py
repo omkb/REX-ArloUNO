@@ -35,13 +35,14 @@ ROUTE = list(LANDMARKS) + [START_LANDMARK]
 SCAN_STEP_DEG = 10
 SCAN_SETTLE_S = 0.25
 MAX_POSITION_SPREAD_CM = 55.0  # Experimental threshold, tune on the real robot
-DRIVE_STEP_CM = 30.0
+DRIVE_STEP_CM = 30.0         # Forward step while detouring, and the shortest step towards a waypoint
+MAX_DRIVE_STEP_CM = 80.0     # Longest forward step towards a waypoint before looking again
 DRIVE_SPEED_CMS = 30.0
 TURN_SPEED_DEG_S = 60.0
 TURN_TOLERANCE_DEG = 12.0
 AVOID_TURN_DEG = 25.0       # Turn step when avoiding an obstacle
 TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
-WAYPOINT_DISTANCE_CM = 20.0  # Replan after reaching an intermediate RRT waypoint
+WAYPOINT_DISTANCE_CM = 20.0  # Advance to the next RRT waypoint within this distance
 
 STREAM_MAP = True             # Stream the particle map to http://<robot>:STREAM_PORT/
 STREAM_PORT = 8000
@@ -89,8 +90,9 @@ def map_obstacles(obstacle_markers, x, y, theta):
         obstacle_map[marker_id] = (ox, oy, n)
 
 
-def draw_map(particles, weights, target=None, waypoint=None):
-    """Draw landmarks, obstacles, particles and the pose estimate (BGR image, y-axis up)."""
+def draw_map(particles, weights, target=None, path=None):
+    """Draw landmarks, obstacles, particles, the pose estimate and the RRT path planned for
+    the current leg (BGR image, y-axis up). ``path`` runs from the leg start to the target."""
     xs = [p[0] for p in POSITIONS.values()]
     ys = [p[1] for p in POSITIONS.values()]
     min_x, min_y = min(xs) - MAP_MARGIN_PX, min(ys) - MAP_MARGIN_PX
@@ -132,18 +134,20 @@ def draw_map(particles, weights, target=None, waypoint=None):
     cv2.circle(world, start, 6, (0, 0, 0), 2)
     cv2.line(world, start, px(x + 25 * math.cos(theta), y + 25 * math.sin(theta)),
              (0, 0, 0), 2)
-    if waypoint is not None and waypoint != POSITIONS.get(target):
-        cv2.line(world, start, px(*waypoint), (200, 0, 200), 1)
-        cv2.drawMarker(world, px(*waypoint), (200, 0, 200), cv2.MARKER_CROSS, 12, 2)
+    if path:
+        points = np.array([px(*point) for point in path], dtype=np.int32)
+        cv2.polylines(world, [points], False, (200, 0, 200), 2, cv2.LINE_AA)
+        for point in path[1:-1]:  # The ends are the leg start and the target landmark
+            cv2.drawMarker(world, px(*point), (200, 0, 200), cv2.MARKER_CROSS, 12, 2)
     spread = mcl.position_spread_cm(particles, weights)
     cv2.putText(world, f"({x:.0f}, {y:.0f}, {math.degrees(theta):.0f} deg) spread={spread:.0f} cm",
                 (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
     return world
 
 
-def publish_map(particles, weights, target=None, waypoint=None):
+def publish_map(particles, weights, target=None, path=None):
     if streamer is not None:
-        streamer.publish(draw_map(particles, weights, target, waypoint))
+        streamer.publish(draw_map(particles, weights, target, path))
 
 
 def sonar(arlo, direction):
@@ -184,18 +188,27 @@ def update_localization(particles, weights, seen_landmarks):
     return particles, weights
 
 
-def choose_action(arlo, obstacle_markers, failed_action=None):
+def choose_action(arlo, obstacle_markers, failed_action=None, forward_cm=DRIVE_STEP_CM):
     return obstacles.choose_action(
         sonar(arlo, 'front'), sonar(arlo, 'left'),
         sonar(arlo, 'right'), sonar(arlo, 'back'),
-        obstacle_markers.values(), distance_cm=DRIVE_STEP_CM, failed_action=failed_action
+        obstacle_markers.values(), distance_cm=forward_cm, failed_action=failed_action
     )
 
 
-def perform(arlo, particles, action):
+def forward_step(arlo, waypoint_distance, final):
+    """Forward step towards a waypoint: as far as the waypoint and front sonar allow."""
+    if final:  # Stop well inside TARGET_DISTANCE_CM instead of driving into the landmark
+        waypoint_distance -= TARGET_DISTANCE_CM / 2
+    front = sonar(arlo, 'front')
+    sonar_limit = DRIVE_STEP_CM if front is None else front - obstacles.CLEARANCE_CM - 1
+    return max(DRIVE_STEP_CM, min(MAX_DRIVE_STEP_CM, waypoint_distance, sonar_limit))
+
+
+def perform(arlo, particles, action, forward_cm=DRIVE_STEP_CM):
     """Perform one action; return False if drive() refused to move."""
     if action == 'forward':
-        return drive(arlo, particles, DRIVE_STEP_CM)
+        return drive(arlo, particles, forward_cm)
     if action == 'backward':
         return drive(arlo, particles, -obstacles.REVERSE_CM)
     turn(arlo, particles, -AVOID_TURN_DEG if action == 'right' else AVOID_TURN_DEG)
@@ -281,31 +294,27 @@ def visit_target(arlo, camera, particles, weights, target):
         waypoint = path[waypoint_index]
         _, waypoint_distance = navigation.direction_to_target(x, y, theta, *waypoint)
         if waypoint_index < len(path) - 1 and waypoint_distance <= WAYPOINT_DISTANCE_CM:
-            path = rrt.plan_path(
-                (x, y), (target_x, target_y),
-                [(ox, oy, obstacles.MAP_CLEARANCE_CM)
-                 for ox, oy, _ in obstacle_map.values()],
-            )
-            if path is None:
-                raise RuntimeError(f"RRT could not find a path to {target}")
-            waypoint_index = 1
+            waypoint_index += 1
             continue
 
         target_bearing, _ = navigation.direction_to_target(x, y, theta, *waypoint)
-        publish_map(particles, weights, target, waypoint)
+        publish_map(particles, weights, target, path)
         print(f"{target}: pose=({x:.0f}, {y:.0f}, {math.degrees(theta):.0f}°), "
               f"dist={target_distance:.0f} cm, spread={spread:.0f} cm, "
               f"RRT waypoint=({waypoint[0]:.0f}, {waypoint[1]:.0f})")
 
-        action = choose_action(arlo, obstacle_markers, failed_action)
+        forward_cm = DRIVE_STEP_CM
+        if not detouring:
+            forward_cm = forward_step(arlo, waypoint_distance, waypoint_index == len(path) - 1)
+        action = choose_action(arlo, obstacle_markers, failed_action, forward_cm)
         if action != 'forward':
             detouring = True
         elif not detouring and abs(math.degrees(target_bearing)) > TURN_TOLERANCE_DEG:
-            turn(arlo, particles, max(-30.0, min(30.0, math.degrees(target_bearing))))
+            turn(arlo, particles, math.degrees(target_bearing))
             failed_action = None
             continue
 
-        success = perform(arlo, particles, action)
+        success = perform(arlo, particles, action, forward_cm)
         failed_action = None if success else action
         if success and action == 'forward':
             detouring = False
