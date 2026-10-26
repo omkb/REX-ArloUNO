@@ -14,6 +14,7 @@ import mapstream
 import mcl
 import navigation
 import obstacles
+import rrt
 from arlo import Arlo, Direction
 from camera import Camera
 
@@ -40,6 +41,7 @@ TURN_SPEED_DEG_S = 60.0
 TURN_TOLERANCE_DEG = 12.0
 AVOID_TURN_DEG = 25.0       # Turn step when avoiding an obstacle
 TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
+WAYPOINT_DISTANCE_CM = 20.0  # Replan after reaching an intermediate RRT waypoint
 
 STREAM_MAP = True             # Stream the particle map to http://<robot>:STREAM_PORT/
 STREAM_PORT = 8000
@@ -244,33 +246,56 @@ def initialize(arlo, camera):
 
 
 def visit_target(arlo, camera, particles, weights, target):
-    """Drive towards the target using MCL; the marker need not be visible."""
+    """Plan and follow an RRT path to the target using the current obstacle map."""
     failed_action = None
     detouring = False
+    path = None
+    waypoint_index = 1
     while True:
         seen_landmarks, obstacle_markers = observations(camera)
         particles, weights = update_localization(particles, weights, seen_landmarks)
         x, y, theta = mcl.pose_estimate(particles, weights)
         spread = mcl.position_spread_cm(particles, weights)
         if spread <= MAX_POSITION_SPREAD_CM:  # Only trust the pose for mapping when converged
+            known_obstacles = set(obstacle_map)
             map_obstacles(obstacle_markers, x, y, theta)
 
-        # Aim at the target, or at a waypoint beside a mapped obstacle in the way.
         target_x, target_y = POSITIONS[target]
         target_distance = math.hypot(target_x - x, target_y - y)
-        waypoint = navigation.detour_waypoint(
-            x, y, target_x, target_y,
-            [(ox, oy) for ox, oy, _ in obstacle_map.values()], obstacles.MAP_CLEARANCE_CM
-        )
-        target_bearing, _ = navigation.direction_to_target(x, y, theta, *waypoint)
-        publish_map(particles, weights, target, waypoint)
-        via = '' if waypoint == (target_x, target_y) else f" via ({waypoint[0]:.0f}, {waypoint[1]:.0f})"
-        print(f"{target}: pose=({x:.0f}, {y:.0f}, {math.degrees(theta):.0f}°), "
-              f"dist={target_distance:.0f} cm, spread={spread:.0f} cm{via}")
-
         if target_distance <= TARGET_DISTANCE_CM and spread <= MAX_POSITION_SPREAD_CM:
             print(f"Reached {target}")
             return particles, weights
+
+        if path is None or (spread <= MAX_POSITION_SPREAD_CM
+                            and set(obstacle_map) != known_obstacles):
+            mapped_obstacles = [
+                (ox, oy, obstacles.MAP_CLEARANCE_CM)
+                for ox, oy, _ in obstacle_map.values()
+            ]
+            path = rrt.plan_path((x, y), (target_x, target_y), mapped_obstacles)
+            if path is None:
+                raise RuntimeError(f"RRT could not find a path to {target}")
+            waypoint_index = 1
+            print(f"RRT planned {len(path) - 1} segment(s) to {target}")
+
+        waypoint = path[waypoint_index]
+        _, waypoint_distance = navigation.direction_to_target(x, y, theta, *waypoint)
+        if waypoint_index < len(path) - 1 and waypoint_distance <= WAYPOINT_DISTANCE_CM:
+            path = rrt.plan_path(
+                (x, y), (target_x, target_y),
+                [(ox, oy, obstacles.MAP_CLEARANCE_CM)
+                 for ox, oy, _ in obstacle_map.values()],
+            )
+            if path is None:
+                raise RuntimeError(f"RRT could not find a path to {target}")
+            waypoint_index = 1
+            continue
+
+        target_bearing, _ = navigation.direction_to_target(x, y, theta, *waypoint)
+        publish_map(particles, weights, target, waypoint)
+        print(f"{target}: pose=({x:.0f}, {y:.0f}, {math.degrees(theta):.0f}°), "
+              f"dist={target_distance:.0f} cm, spread={spread:.0f} cm, "
+              f"RRT waypoint=({waypoint[0]:.0f}, {waypoint[1]:.0f})")
 
         action = choose_action(arlo, obstacle_markers, failed_action)
         if action != 'forward':
