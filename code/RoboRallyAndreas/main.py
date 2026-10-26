@@ -34,12 +34,12 @@ ROUTE = list(LANDMARKS) + [START_LANDMARK]
 SCAN_STEP_DEG = 10
 SCAN_SETTLE_S = 0.25
 MAX_POSITION_SPREAD_CM = 55.0  # Experimental threshold, tune on the real robot
-DRIVE_STEP_CM = 15.0
-DRIVE_SPEED_CMS = 20.0
+DRIVE_STEP_CM = 30.0
+DRIVE_SPEED_CMS = 30.0
 TURN_SPEED_DEG_S = 60.0
 TURN_TOLERANCE_DEG = 12.0
 AVOID_TURN_DEG = 25.0       # Turn step when avoiding an obstacle
-TARGET_DISTANCE_CM = 45.0    # Reached when the estimated position is within this distance
+TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
 
 STREAM_MAP = True             # Stream the particle map to http://<robot>:STREAM_PORT/
 STREAM_PORT = 8000
