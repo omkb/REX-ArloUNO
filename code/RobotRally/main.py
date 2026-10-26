@@ -38,7 +38,6 @@ DRIVE_STEP_CM = 15.0
 DRIVE_SPEED_CMS = 20.0
 TURN_SPEED_DEG_S = 60.0
 TURN_TOLERANCE_DEG = 12.0
-AVOID_TURN_DEG = 25.0       # Turn step when avoiding an obstacle
 TARGET_DISTANCE_CM = 45.0    # Reached when the estimated position is within this distance
 
 STREAM_MAP = True             # Stream the particle map to http://<robot>:STREAM_PORT/
@@ -50,22 +49,16 @@ streamer = None
 
 
 def observations(camera):
-    """Read one image and return (seen_landmarks, obstacle_markers).
-
-    seen_landmarks is {name: (cm, bearing_rad)}; every other marker is an obstacle,
-    returned as a list of (cm, bearing_rad).
-    """
+    """Read one image and return known landmarks as {name: (cm, bearing_rad)}."""
     ids, distances, angles = camera.detect_aruco_objects(camera.get_next_frame())
     if ids is None:
-        return {}, []
-    seen_landmarks, obstacle_markers = {}, []
+        return {}
+    obs = {}
     for marker_id, distance, angle in zip(ids, distances, angles):
         name = LANDMARK_BY_MARKER.get(int(marker_id))
-        if name is None:
-            obstacle_markers.append((float(distance), float(angle)))
-        elif name not in seen_landmarks or distance < seen_landmarks[name][0]:
-            seen_landmarks[name] = (float(distance), float(angle))
-    return seen_landmarks, obstacle_markers
+        if name is not None and (name not in obs or distance < obs[name][0]):
+            obs[name] = (float(distance), float(angle))
+    return obs
 
 
 def draw_map(particles, weights, target=None):
@@ -116,10 +109,10 @@ def publish_map(particles, weights, target=None):
 
 
 def sonar(arlo, direction):
-    """Returns a sonar reading in cm; None for invalid/unavailable values."""
+    """Returns a sonar reading in mm; None for invalid/unavailable values."""
     method = getattr(arlo.robot, f"read_{direction}_ping_sensor")
     value = method()
-    return float(value) / 10 if value is not None and value > 0 else None
+    return float(value) if value is not None and value > 0 else None
 
 
 def turn(arlo, particles, degrees):
@@ -137,7 +130,8 @@ def drive(arlo, particles, distance_cm):
     if distance_cm == 0:
         return False
     sensor = 'front' if distance_cm > 0 else 'back'
-    if not obstacles.is_clear(sonar(arlo, sensor), distance_cm):
+    reading = sonar(arlo, sensor)
+    if reading is None or reading <= obstacles.CLEARANCE_MM + abs(distance_cm) * 10:
         return False
     direction = Direction.FORWARD if distance_cm > 0 else Direction.BACKWARD
     arlo.drive(direction, DRIVE_SPEED_CMS, distance_cm=abs(distance_cm), debug=False).wait()
@@ -146,36 +140,37 @@ def drive(arlo, particles, distance_cm):
     return True
 
 
-def update_localization(particles, weights, seen_landmarks, target=None):
-    """Weight particles by the seen landmarks, resample, and publish the map."""
-    if mcl.measurement_update(particles, weights, seen_landmarks, POSITIONS):
+def update_localization(camera, particles, weights, target=None):
+    obs = observations(camera)
+    if obs and mcl.measurement_update(particles, weights, obs, POSITIONS):
         particles, weights = mcl.resample(particles, weights)
     publish_map(particles, weights, target)
-    return particles, weights
+    return obs, particles, weights
 
 
-def choose_action(arlo, obstacle_markers=(), failed_action=None):
+def choose_action(arlo, distance_cm=DRIVE_STEP_CM, failed_action=None):
     return obstacles.choose_action(
         sonar(arlo, 'front'), sonar(arlo, 'left'),
         sonar(arlo, 'right'), sonar(arlo, 'back'),
-        obstacle_markers, distance_cm=DRIVE_STEP_CM, failed_action=failed_action
+        distance_cm=distance_cm, failed_action=failed_action
     )
 
 
-def perform(arlo, particles, action):
-    """Perform one action; return False if drive() refused to move."""
-    if action == 'forward':
-        return drive(arlo, particles, DRIVE_STEP_CM)
+def avoid_obstacle(arlo, particles, action):
+    """Perform just one movement; the caller reads sonar again afterwards."""
     if action == 'backward':
-        return drive(arlo, particles, -obstacles.REVERSE_CM)
-    turn(arlo, particles, -AVOID_TURN_DEG if action == 'right' else AVOID_TURN_DEG)
+        return drive(arlo, particles, -10)
+    turn(arlo, particles, -25 if action == 'right' else 25)
     return True
 
 
-def reposition(arlo, particles, obstacle_markers, failed_action):
+def reposition(arlo, particles, failed_action):
     """Choose one movement. Report translation so initialization can reset MCL."""
-    action = choose_action(arlo, obstacle_markers, failed_action)
-    success = perform(arlo, particles, action)
+    action = choose_action(arlo, failed_action=failed_action)
+    if action == 'forward':
+        success = drive(arlo, particles, DRIVE_STEP_CM)
+    else:
+        success = avoid_obstacle(arlo, particles, action)
     moved = success and action in ('forward', 'backward')
     return moved, None if success else action
 
@@ -187,28 +182,33 @@ def initialize(arlo, camera):
     failed_action = None
     while True:
         for _ in range(360 // SCAN_STEP_DEG):
-            seen_landmarks, obstacle_markers = observations(camera)
-            print(f"Detected landmarks: {list(seen_landmarks)}")
-            if particles is None and START_LANDMARK in seen_landmarks:
-                # The starting landmark is used up by initialization.
-                particles, weights = mcl.initialize_from_landmark(
-                    POSITIONS, START_LANDMARK, *seen_landmarks.pop(START_LANDMARK)
-                )
-
             if particles is None:
-                publish_map(None, None)
+                obs = observations(camera)
+                print(f"Detected landmarks: {list(obs.keys())}")
+                if START_LANDMARK in obs:
+                    particles, weights = mcl.initialize_from_landmark(
+                        POSITIONS, START_LANDMARK, *obs[START_LANDMARK]
+                    )
+                    # The starting landmark is already included in initialization.
+                    obs = {i: value for i, value in obs.items() if i != START_LANDMARK}
+                    if obs:
+                        mcl.measurement_update(particles, weights, obs, POSITIONS)
+                        particles, weights = mcl.resample(particles, weights)
+                publish_map(particles, weights)
             else:
-                particles, weights = update_localization(particles, weights, seen_landmarks)
-                seen_second = seen_second or any(i != START_LANDMARK for i in seen_landmarks)
+                obs, particles, weights = update_localization(camera, particles, weights)
+
+            if particles is not None:
+                seen_second = seen_second or any(i != START_LANDMARK for i in obs)
                 spread = mcl.position_spread_cm(particles, weights)
-                if seen_second and seen_landmarks and spread <= MAX_POSITION_SPREAD_CM:
+                if seen_second and obs and spread <= MAX_POSITION_SPREAD_CM:
                     print(f"Localization ready; spread={spread:.1f} cm")
                     return particles, weights
             turn(arlo, particles, SCAN_STEP_DEG)
             time.sleep(SCAN_SETTLE_S)
 
         print("Repositioning to improve localization")
-        moved, failed_action = reposition(arlo, particles, obstacle_markers, failed_action)
+        moved, failed_action = reposition(arlo, particles, failed_action)
         if moved:
             particles = weights = None
             seen_second = False
@@ -219,8 +219,7 @@ def visit_target(arlo, camera, particles, weights, target):
     failed_action = None
     detouring = False
     while True:
-        seen_landmarks, obstacle_markers = observations(camera)
-        particles, weights = update_localization(particles, weights, seen_landmarks, target)
+        _, particles, weights = update_localization(camera, particles, weights)
         x, y, theta = mcl.pose_estimate(particles, weights)
         target_bearing, target_distance = navigation.direction_to_target(
             x, y, theta, *POSITIONS[target]
@@ -233,18 +232,21 @@ def visit_target(arlo, camera, particles, weights, target):
             print(f"Reached {target}")
             return particles, weights
 
-        action = choose_action(arlo, obstacle_markers, failed_action)
+        action = choose_action(arlo, DRIVE_STEP_CM, failed_action)
         if action != 'forward':
             detouring = True
-        elif not detouring and abs(math.degrees(target_bearing)) > TURN_TOLERANCE_DEG:
-            turn(arlo, particles, max(-30.0, min(30.0, math.degrees(target_bearing))))
-            failed_action = None
+            success = avoid_obstacle(arlo, particles, action)
+            failed_action = None if success else action
             continue
 
-        success = perform(arlo, particles, action)
-        failed_action = None if success else action
-        if success and action == 'forward':
-            detouring = False
+        if not detouring and abs(math.degrees(target_bearing)) > TURN_TOLERANCE_DEG:
+            turn(arlo, particles, max(-30.0, min(30.0, math.degrees(target_bearing))))
+            failed_action = None
+        else:
+            success = drive(arlo, particles, DRIVE_STEP_CM)
+            failed_action = None if success else 'forward'
+            if success:
+                detouring = False
 
 
 def main():
