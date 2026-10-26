@@ -48,6 +48,7 @@ STREAM_MAP = True             # Stream the particle map to http://<robot>:STREAM
 STREAM_PORT = 8000
 MAP_MARGIN_PX = 100           # 1 px per cm, plus a margin around the landmarks
 MAP_MAX_DRAWN = 200           # Drawing all particles is slow on the Pi
+MAP_PUBLISH_INTERVAL_S = 1.0  # Map updates while driving a segment; each one pauses sensing briefly
 MAP_MAX_SIGHTINGS = 10        # Later sightings still move a mapped obstacle by at least 1/10
 TRAIL_MIN_STEP_CM = 5.0       # Only extend the trail once the pose estimate moves this far
 
@@ -215,17 +216,19 @@ def segment_distance(waypoint_distance, final):
     return max(DRIVE_STEP_CM, waypoint_distance)
 
 
-def drive_segment(arlo, camera, particles, weights, distance_cm):
+def drive_segment(arlo, camera, particles, weights, distance_cm, target, path):
     """Drive distance_cm without stopping, watching the front sonar and the camera.
 
     Halts early for an obstacle ahead or a newly mapped obstacle. Landmarks seen on the
-    way update MCL. Returns (particles, weights, replan); replan is True when a new
-    obstacle was mapped, since the planned path may now run through it.
+    way update MCL, and the map is published every MAP_PUBLISH_INTERVAL_S. Returns
+    (particles, weights, replan); replan is True when a new obstacle was mapped, since
+    the planned path may now run through it.
     """
     known_obstacles = set(obstacle_map)
     handle = arlo.drive(Direction.FORWARD, DRIVE_SPEED_CMS, distance_cm=distance_cm, debug=False)
     applied = 0.0  # Distance already applied to the particles
     replan = False
+    last_publish = time.monotonic()
     try:
         while handle.is_alive():
             if not obstacles.is_clear(sonar(arlo, 'front')):
@@ -253,6 +256,13 @@ def drive_segment(arlo, camera, particles, weights, distance_cm):
                     print("Segment halted: new obstacle mapped")
                     replan = True
                     break
+
+            if streamer is not None and time.monotonic() - last_publish >= MAP_PUBLISH_INTERVAL_S:
+                shown = particles.copy()  # Show the distance not yet applied to the particles
+                shown[:, 0] += moved * np.cos(shown[:, 2])
+                shown[:, 1] += moved * np.sin(shown[:, 2])
+                publish_map(shown, weights, target, path)
+                last_publish = time.monotonic()
     finally:
         if handle.is_alive():
             handle.halt("segment interrupted")
@@ -371,6 +381,7 @@ def visit_target(arlo, camera, particles, weights, target):
             particles, weights, replan = drive_segment(
                 arlo, camera, particles, weights,
                 segment_distance(waypoint_distance, waypoint_index == len(path) - 1),
+                target, path,
             )
             if replan:
                 path = None
