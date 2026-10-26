@@ -49,9 +49,11 @@ STREAM_PORT = 8000
 MAP_MARGIN_PX = 100           # 1 px per cm, plus a margin around the landmarks
 MAP_MAX_DRAWN = 200           # Drawing all particles is slow on the Pi
 MAP_MAX_SIGHTINGS = 10        # Later sightings still move a mapped obstacle by at least 1/10
+TRAIL_MIN_STEP_CM = 5.0       # Only extend the trail once the pose estimate moves this far
 
 streamer = None
 obstacle_map = {}  # Marker ID -> (x, y, sightings): obstacle centres in world cm
+trail = []         # Pose estimates (x, y) along the route, in world cm
 
 
 def observations(camera):
@@ -90,6 +92,11 @@ def map_obstacles(obstacle_markers, x, y, theta):
         obstacle_map[marker_id] = (ox, oy, n)
 
 
+def record_trail(x, y):
+    if not trail or math.hypot(x - trail[-1][0], y - trail[-1][1]) >= TRAIL_MIN_STEP_CM:
+        trail.append((x, y))
+
+
 def draw_map(particles, weights, target=None, path=None):
     """Draw landmarks, obstacles, particles, the pose estimate and the RRT path planned for
     the current leg (BGR image, y-axis up). ``path`` runs from the leg start to the target."""
@@ -116,6 +123,10 @@ def draw_map(particles, weights, target=None, path=None):
         cv2.circle(world, centre, int(obstacles.MAP_CLEARANCE_CM), (170, 170, 170), 1)
         cv2.putText(world, str(marker_id), (centre[0] - 8, centre[1] + 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+
+    if len(trail) > 1:
+        points = np.array([px(*point) for point in trail], dtype=np.int32)
+        cv2.polylines(world, [points], False, (0, 140, 255), 2, cv2.LINE_AA)
 
     if particles is None:
         return world
@@ -270,6 +281,7 @@ def visit_target(arlo, camera, particles, weights, target):
         x, y, theta = mcl.pose_estimate(particles, weights)
         spread = mcl.position_spread_cm(particles, weights)
         if spread <= MAX_POSITION_SPREAD_CM:  # Only trust the pose for mapping when converged
+            record_trail(x, y)
             known_obstacles = set(obstacle_map)
             map_obstacles(obstacle_markers, x, y, theta)
 
