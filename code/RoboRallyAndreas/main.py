@@ -39,8 +39,9 @@ MAX_POSITION_SPREAD_CM = 55.0  # Experimental threshold, tune on the real robot
 DRIVE_STEP_CM = 30.0         # Forward step while detouring, and the shortest segment drive
 MEASURE_MIN_CM = 10.0        # While driving, update MCL from landmarks at most once per this distance
 DRIVE_SPEED_CMS = 30.0
-TURN_SPEED_DEG_S = 60.0
+TURN_SPEED_DEG_S = 50.0     # Slowest real turn: wheels at SPEED_AT_PWM_MIN_CMS (lower is clamped)
 TURN_TOLERANCE_DEG = 12.0
+MAX_TURN_STEP_DEG = 180.0   # Longest single turn towards a target; 180 turns the full bearing at once
 AVOID_TURN_DEG = 25.0       # Turn step when avoiding an obstacle
 TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
 WAYPOINT_DISTANCE_CM = 20.0  # Advance to the next RRT waypoint within this distance
@@ -169,6 +170,10 @@ def sonar(arlo, direction):
     with arlo.serial_lock:  # The drive thread may be sending motor commands
         value = method()
     return float(value) / 10 if value is not None and value > 0 else None
+
+
+def clamp_turn(degrees):
+    return max(-MAX_TURN_STEP_DEG, min(MAX_TURN_STEP_DEG, degrees))
 
 
 def turn(arlo, particles, degrees):
@@ -326,10 +331,15 @@ def initialize(arlo, camera):
 
 def survey_leg(arlo, camera, particles, weights, target):
     """Face the target landmark and map the obstacles in view before planning the leg."""
-    x, y, theta = mcl.pose_estimate(particles, weights)
-    bearing, _ = navigation.direction_to_target(x, y, theta, *POSITIONS[target])
-    turn(arlo, particles, math.degrees(bearing))
-    time.sleep(SCAN_SETTLE_S)
+    for _ in range(int(180 // MAX_TURN_STEP_DEG) + 2):
+        x, y, theta = mcl.pose_estimate(particles, weights)
+        bearing, _ = navigation.direction_to_target(x, y, theta, *POSITIONS[target])
+        if abs(math.degrees(bearing)) <= TURN_TOLERANCE_DEG:
+            break
+        turn(arlo, particles, clamp_turn(math.degrees(bearing)))
+        time.sleep(SCAN_SETTLE_S)
+        seen_landmarks, _ = observations(camera)
+        particles, weights = update_localization(particles, weights, seen_landmarks)
     for _ in range(SURVEY_FRAMES):
         seen_landmarks, obstacle_markers = observations(camera)
         particles, weights = update_localization(particles, weights, seen_landmarks)
@@ -392,7 +402,7 @@ def visit_target(arlo, camera, particles, weights, target):
         if action != 'forward':
             detouring = True
         elif not detouring and abs(math.degrees(target_bearing)) > TURN_TOLERANCE_DEG:
-            turn(arlo, particles, max(-30.0, min(30.0, math.degrees(target_bearing))))
+            turn(arlo, particles, clamp_turn(math.degrees(target_bearing)))
             failed_action = None
             continue
 
