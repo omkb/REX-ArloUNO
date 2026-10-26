@@ -36,7 +36,7 @@ SCAN_STEP_DEG = 10
 SCAN_SETTLE_S = 0.25
 MAX_POSITION_SPREAD_CM = 55.0  # Experimental threshold, tune on the real robot
 DRIVE_STEP_CM = 30.0         # Forward step while detouring, and the shortest step towards a waypoint
-MAX_DRIVE_STEP_CM = 80.0     # Longest forward step towards a waypoint before looking again
+MAX_DRIVE_STEP_CM = 30.0     # Longest forward step towards a waypoint before looking again
 DRIVE_SPEED_CMS = 30.0
 TURN_SPEED_DEG_S = 60.0
 TURN_TOLERANCE_DEG = 12.0
@@ -322,7 +322,7 @@ def visit_target(arlo, camera, particles, weights, target):
         if action != 'forward':
             detouring = True
         elif not detouring and abs(math.degrees(target_bearing)) > TURN_TOLERANCE_DEG:
-            turn(arlo, particles, math.degrees(target_bearing))
+            turn(arlo, particles, max(-30.0, min(30.0, math.degrees(target_bearing))))
             failed_action = None
             continue
 
