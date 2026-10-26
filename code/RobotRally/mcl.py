@@ -20,8 +20,8 @@ import numpy as np
 NUM_PARTICLES = 1000
 SIGMA_DISTANCE = 10.0
 SIGMA_BEARING = np.deg2rad(5.0)
-SIGMA_TRANSLATION = 2.0
-SIGMA_ROTATION = np.deg2rad(2.0)
+SIGMA_TRANSLATION = 4.0
+SIGMA_ROTATION = np.deg2rad(4.0)
 
 
 def wrap_angle(angle):

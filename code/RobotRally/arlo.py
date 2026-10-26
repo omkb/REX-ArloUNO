@@ -33,9 +33,15 @@ class DriveHandle:
     any other drive() calls.
     """
 
-    def __init__(self, thread: threading.Thread, halt_signal: HaltSignal):
+    def __init__(self, thread: threading.Thread, halt_signal: HaltSignal, progress=None):
         self._thread = thread
         self._halt_signal = halt_signal
+        self._progress = progress
+
+    @property
+    def estimated_distance_cm(self):
+        """Open-loop distance integrated by the drive worker, not encoder odometry."""
+        return self._progress['distance_cm'] if self._progress is not None else 0.0
 
     def halt(self, reason: str = "stopped"):
         """Stop the robot immediately, skipping any deceleration ramp,
@@ -72,6 +78,8 @@ class Arlo(object):
     def __init__(self, port='/dev/ttyACM0'):
         print("Initializing arlo...")
         self.robot = Robot(port)
+        # Sonar polling and motor commands share the same serial connection.
+        self.io_lock = threading.Lock()
         self._current_handle: Optional[DriveHandle] = None
         print("Finished initializing arlo")
 
@@ -110,11 +118,12 @@ class Arlo(object):
             self._current_handle.halt(reason="interrupted by new drive command")
 
         halt_signal = HaltSignal()
+        progress = {'distance_cm': 0.0}
         thread = threading.Thread(
             target=self._drive_worker,
-            args=(direction, speed_cms, distance_cm, debug, halt_signal),
+            args=(direction, speed_cms, distance_cm, debug, halt_signal, progress),
         )
-        handle = DriveHandle(thread, halt_signal)
+        handle = DriveHandle(thread, halt_signal, progress)
         self._current_handle = handle
         thread.start()
         return handle
@@ -125,7 +134,7 @@ class Arlo(object):
         if self._current_handle is not None:
             self._current_handle.halt(reason="stopped")
 
-    def _drive_worker(self, direction, speed_cms, distance_cm, debug, halt_signal):
+    def _drive_worker(self, direction, speed_cms, distance_cm, debug, halt_signal, progress):
         v0 = self.SPEED_AT_PWM_MIN_CMS
         a = self.ACCELERATION_CMS2
         target_speed = min(speed_cms, self.SPEED_AT_PWM_MAX_CMS)
@@ -139,14 +148,16 @@ class Arlo(object):
             nonlocal last_pwm
             if pwm != last_pwm:
                 #print(f"  -> pwm={pwm}")
-                self.robot.go_diff(pwm, pwm, direction, direction)
+                with self.io_lock:
+                    self.robot.go_diff(pwm, pwm, direction, direction)
                 last_pwm = pwm
 
         def halted():
             if halt_signal.is_set():
                 if debug:
                     print(f"drive: {halt_signal.reason}")
-                self.robot.stop()
+                with self.io_lock:
+                    self.robot.stop()
                 return True
             return False
 
@@ -176,6 +187,7 @@ class Arlo(object):
             send_pwm(self._speed_to_pwm(current_speed))
 
             traveled += current_speed * dt
+            progress['distance_cm'] = traveled
             time.sleep(self.CONTROL_DT_S)
 
         # --- cruise phase ---
@@ -188,6 +200,10 @@ class Arlo(object):
             while True:
                 if halted():
                     return
+                now = time.monotonic()
+                traveled += target_speed * (now - t_prev)
+                progress['distance_cm'] = traveled
+                t_prev = now
                 time.sleep(self.CONTROL_DT_S)
 
         cruise_end = distance_cm - d_decel
@@ -199,6 +215,7 @@ class Arlo(object):
             t_prev = now
 
             traveled += target_speed * dt
+            progress['distance_cm'] = traveled
             time.sleep(self.CONTROL_DT_S)
 
         # --- deceleration phase ---
@@ -215,11 +232,13 @@ class Arlo(object):
             send_pwm(self._speed_to_pwm(current_speed))
 
             traveled += current_speed * dt
+            progress['distance_cm'] = traveled
             time.sleep(self.CONTROL_DT_S)
 
         if debug:
             print("drive: halt")
-        self.robot.stop()
+        with self.io_lock:
+            self.robot.stop()
 
     def _wheel_cms_to_angspeed_degs(self, wheel_speed_cms):
         """Per-wheel linear speed (cm/s) -> robot angular speed (deg/s),
@@ -282,14 +301,16 @@ class Arlo(object):
             nonlocal last_pwm
             if pwm != last_pwm:
                 #print(f"  -> pwm={pwm}")
-                self.robot.go_diff(pwm, pwm, dir_left, dir_right)
+                with self.io_lock:
+                    self.robot.go_diff(pwm, pwm, dir_left, dir_right)
                 last_pwm = pwm
 
         def halted():
             if halt_signal.is_set():
                 if debug:
                     print(f"turn: {halt_signal.reason}")
-                self.robot.stop()
+                with self.io_lock:
+                    self.robot.stop()
                 return True
             return False
 
@@ -350,4 +371,5 @@ class Arlo(object):
 
         if debug:
             print("turn: halt")
-        self.robot.stop()
+        with self.io_lock:
+            self.robot.stop()
