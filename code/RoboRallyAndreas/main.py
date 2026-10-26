@@ -34,6 +34,7 @@ ROUTE = list(LANDMARKS) + [START_LANDMARK]
 
 SCAN_STEP_DEG = 10
 SCAN_SETTLE_S = 0.25
+SURVEY_FRAMES = 3            # Frames taken facing a new target landmark before planning its leg
 MAX_POSITION_SPREAD_CM = 55.0  # Experimental threshold, tune on the real robot
 DRIVE_STEP_CM = 30.0         # Forward step while detouring, and the shortest segment drive
 MEASURE_MIN_CM = 10.0        # While driving, update MCL from landmarks at most once per this distance
@@ -323,8 +324,26 @@ def initialize(arlo, camera):
             seen_second = False
 
 
+def survey_leg(arlo, camera, particles, weights, target):
+    """Face the target landmark and map the obstacles in view before planning the leg."""
+    x, y, theta = mcl.pose_estimate(particles, weights)
+    bearing, _ = navigation.direction_to_target(x, y, theta, *POSITIONS[target])
+    turn(arlo, particles, math.degrees(bearing))
+    time.sleep(SCAN_SETTLE_S)
+    for _ in range(SURVEY_FRAMES):
+        seen_landmarks, obstacle_markers = observations(camera)
+        particles, weights = update_localization(particles, weights, seen_landmarks)
+        if mcl.position_spread_cm(particles, weights) <= MAX_POSITION_SPREAD_CM:
+            map_obstacles(obstacle_markers, *mcl.pose_estimate(particles, weights))
+    print(f"Surveyed leg to {target}: {len(obstacle_map)} obstacle(s) mapped")
+    publish_map(particles, weights, target)
+    return particles, weights
+
+
 def visit_target(arlo, camera, particles, weights, target):
-    """Plan and follow an RRT path to the target using the current obstacle map."""
+    """Survey the leg, then plan and follow an RRT path to the target, replanning
+    when new obstacles are mapped on the way."""
+    particles, weights = survey_leg(arlo, camera, particles, weights, target)
     failed_action = None
     detouring = False
     path = None
