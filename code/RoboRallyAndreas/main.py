@@ -21,10 +21,10 @@ from camera import Camera
 # the actual *observed ArUco marker centres* before relying on localization.
 # Landmark name -> (ArUco marker ID, (x, y)). Route goes L1, L2, L3, L4, L1.
 LANDMARKS = {
-    'L1': (7, (0.0, 0.0)),
-    'L2': (3, (0.0, 300.0)),
-    'L3': (6, (400.0, 0.0)),
-    'L4': (11, (400.0, 300.0)),
+    'L1': (2, (0.0, 0.0)),
+    'L2': (6, (0.0, 300.0)),
+    'L3': (7, (400.0, 0.0)),
+    'L4': (5, (400.0, 300.0)),
 }
 LANDMARK_BY_MARKER = {marker_id: name for name, (marker_id, _) in LANDMARKS.items()}
 POSITIONS = {name: position for name, (_, position) in LANDMARKS.items()}
