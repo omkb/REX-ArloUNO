@@ -1,7 +1,7 @@
 import math
 
 # All distances in cm. Sonar readings are None when invalid.
-CLEARANCE_CM = 25.0  # Minimum clearance after a forward or backward segment
+CLEARANCE_CM = 35.0  # Minimum clearance after a forward or backward segment
 REVERSE_CM = 10.0    # Length of one reverse step
 
 # Camera-detected obstacles: every ArUco marker that is not a landmark.
