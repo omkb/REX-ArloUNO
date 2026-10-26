@@ -36,6 +36,7 @@ class DriveHandle:
     def __init__(self, thread: threading.Thread, halt_signal: HaltSignal):
         self._thread = thread
         self._halt_signal = halt_signal
+        self.traveled = 0.0  # Estimated cm (drive) or degrees (turn) covered so far
 
     def halt(self, reason: str = "stopped"):
         """Stop the robot immediately, skipping any deceleration ramp,
@@ -72,6 +73,9 @@ class Arlo(object):
     def __init__(self, port='/dev/ttyACM0'):
         print("Initializing arlo...")
         self.robot = Robot(port)
+        # Each serial command writes a request and reads its reply, so callers on other
+        # threads (e.g. sonar reads while driving) must hold this lock around robot calls.
+        self.serial_lock = threading.Lock()
         self._current_handle: Optional[DriveHandle] = None
         print("Finished initializing arlo")
 
@@ -110,12 +114,13 @@ class Arlo(object):
             self._current_handle.halt(reason="interrupted by new drive command")
 
         halt_signal = HaltSignal()
-        thread = threading.Thread(
+        handle = DriveHandle(None, halt_signal)
+        handle._thread = threading.Thread(
             target=self._drive_worker,
-            args=(direction, speed_cms, distance_cm, debug, halt_signal),
+            args=(direction, speed_cms, distance_cm, debug, halt_signal, handle),
         )
-        handle = DriveHandle(thread, halt_signal)
         self._current_handle = handle
+        thread = handle._thread
         thread.start()
         return handle
 
@@ -125,7 +130,7 @@ class Arlo(object):
         if self._current_handle is not None:
             self._current_handle.halt(reason="stopped")
 
-    def _drive_worker(self, direction, speed_cms, distance_cm, debug, halt_signal):
+    def _drive_worker(self, direction, speed_cms, distance_cm, debug, halt_signal, handle):
         v0 = self.SPEED_AT_PWM_MIN_CMS
         a = self.ACCELERATION_CMS2
         target_speed = min(speed_cms, self.SPEED_AT_PWM_MAX_CMS)
@@ -139,14 +144,16 @@ class Arlo(object):
             nonlocal last_pwm
             if pwm != last_pwm:
                 #print(f"  -> pwm={pwm}")
-                self.robot.go_diff(pwm, pwm, direction, direction)
+                with self.serial_lock:
+                    self.robot.go_diff(pwm, pwm, direction, direction)
                 last_pwm = pwm
 
         def halted():
             if halt_signal.is_set():
                 if debug:
                     print(f"drive: {halt_signal.reason}")
-                self.robot.stop()
+                with self.serial_lock:
+                    self.robot.stop()
                 return True
             return False
 
@@ -176,6 +183,7 @@ class Arlo(object):
             send_pwm(self._speed_to_pwm(current_speed))
 
             traveled += current_speed * dt
+            handle.traveled = traveled
             time.sleep(self.CONTROL_DT_S)
 
         # --- cruise phase ---
@@ -199,6 +207,7 @@ class Arlo(object):
             t_prev = now
 
             traveled += target_speed * dt
+            handle.traveled = traveled
             time.sleep(self.CONTROL_DT_S)
 
         # --- deceleration phase ---
@@ -215,11 +224,13 @@ class Arlo(object):
             send_pwm(self._speed_to_pwm(current_speed))
 
             traveled += current_speed * dt
+            handle.traveled = traveled
             time.sleep(self.CONTROL_DT_S)
 
         if debug:
             print("drive: halt")
-        self.robot.stop()
+        with self.serial_lock:
+            self.robot.stop()
 
     def _wheel_cms_to_angspeed_degs(self, wheel_speed_cms):
         """Per-wheel linear speed (cm/s) -> robot angular speed (deg/s),
@@ -248,16 +259,17 @@ class Arlo(object):
             self._current_handle.halt(reason="interrupted by new turn command")
 
         halt_signal = HaltSignal()
-        thread = threading.Thread(
+        handle = DriveHandle(None, halt_signal)
+        handle._thread = threading.Thread(
             target=self._turn_worker,
-            args=(degrees, speed_degs, debug, halt_signal),
+            args=(degrees, speed_degs, debug, halt_signal, handle),
         )
-        handle = DriveHandle(thread, halt_signal)
         self._current_handle = handle
+        thread = handle._thread
         thread.start()
         return handle
 
-    def _turn_worker(self, degrees, speed_degs, debug, halt_signal):
+    def _turn_worker(self, degrees, speed_degs, debug, halt_signal, handle):
         ccw = degrees >= 0
         total_degrees = abs(degrees)
 
@@ -282,14 +294,16 @@ class Arlo(object):
             nonlocal last_pwm
             if pwm != last_pwm:
                 #print(f"  -> pwm={pwm}")
-                self.robot.go_diff(pwm, pwm, dir_left, dir_right)
+                with self.serial_lock:
+                    self.robot.go_diff(pwm, pwm, dir_left, dir_right)
                 last_pwm = pwm
 
         def halted():
             if halt_signal.is_set():
                 if debug:
                     print(f"turn: {halt_signal.reason}")
-                self.robot.stop()
+                with self.serial_lock:
+                    self.robot.stop()
                 return True
             return False
 
@@ -314,6 +328,7 @@ class Arlo(object):
             send_pwm(self._speed_to_pwm(self._angspeed_degs_to_wheel_cms(current_ang)))
 
             turned += current_ang * dt
+            handle.traveled = turned
             time.sleep(self.CONTROL_DT_S)
 
         # --- cruise phase ---
@@ -330,6 +345,7 @@ class Arlo(object):
             t_prev = now
 
             turned += target_ang * dt
+            handle.traveled = turned
             time.sleep(self.CONTROL_DT_S)
 
         # --- deceleration phase ---
@@ -346,8 +362,10 @@ class Arlo(object):
             send_pwm(self._speed_to_pwm(self._angspeed_degs_to_wheel_cms(current_ang)))
 
             turned += current_ang * dt
+            handle.traveled = turned
             time.sleep(self.CONTROL_DT_S)
 
         if debug:
             print("turn: halt")
-        self.robot.stop()
+        with self.serial_lock:
+            self.robot.stop()

@@ -35,8 +35,8 @@ ROUTE = list(LANDMARKS) + [START_LANDMARK]
 SCAN_STEP_DEG = 10
 SCAN_SETTLE_S = 0.25
 MAX_POSITION_SPREAD_CM = 55.0  # Experimental threshold, tune on the real robot
-DRIVE_STEP_CM = 30.0         # Forward step while detouring, and the shortest step towards a waypoint
-MAX_DRIVE_STEP_CM = 30.0     # Longest forward step towards a waypoint before looking again
+DRIVE_STEP_CM = 30.0         # Forward step while detouring, and the shortest segment drive
+MEASURE_MIN_CM = 10.0        # While driving, update MCL from landmarks at most once per this distance
 DRIVE_SPEED_CMS = 30.0
 TURN_SPEED_DEG_S = 60.0
 TURN_TOLERANCE_DEG = 12.0
@@ -164,7 +164,8 @@ def publish_map(particles, weights, target=None, path=None):
 def sonar(arlo, direction):
     """Returns a sonar reading in cm; None for invalid/unavailable values."""
     method = getattr(arlo.robot, f"read_{direction}_ping_sensor")
-    value = method()
+    with arlo.serial_lock:  # The drive thread may be sending motor commands
+        value = method()
     return float(value) / 10 if value is not None and value > 0 else None
 
 
@@ -199,27 +200,70 @@ def update_localization(particles, weights, seen_landmarks):
     return particles, weights
 
 
-def choose_action(arlo, obstacle_markers, failed_action=None, forward_cm=DRIVE_STEP_CM):
+def choose_action(arlo, obstacle_markers, failed_action=None):
     return obstacles.choose_action(
         sonar(arlo, 'front'), sonar(arlo, 'left'),
         sonar(arlo, 'right'), sonar(arlo, 'back'),
-        obstacle_markers.values(), distance_cm=forward_cm, failed_action=failed_action
+        obstacle_markers.values(), distance_cm=DRIVE_STEP_CM, failed_action=failed_action
     )
 
 
-def forward_step(arlo, waypoint_distance, final):
-    """Forward step towards a waypoint: as far as the waypoint and front sonar allow."""
+def segment_distance(waypoint_distance, final):
+    """Distance to drive towards a waypoint in one continuous segment."""
     if final:  # Stop well inside TARGET_DISTANCE_CM instead of driving into the landmark
         waypoint_distance -= TARGET_DISTANCE_CM / 2
-    front = sonar(arlo, 'front')
-    sonar_limit = DRIVE_STEP_CM if front is None else front - obstacles.CLEARANCE_CM - 1
-    return max(DRIVE_STEP_CM, min(MAX_DRIVE_STEP_CM, waypoint_distance, sonar_limit))
+    return max(DRIVE_STEP_CM, waypoint_distance)
 
 
-def perform(arlo, particles, action, forward_cm=DRIVE_STEP_CM):
+def drive_segment(arlo, camera, particles, weights, distance_cm):
+    """Drive distance_cm without stopping, watching the front sonar and the camera.
+
+    Halts early for an obstacle ahead or a newly mapped obstacle. Landmarks seen on the
+    way update MCL. Returns (particles, weights, replan); replan is True when a new
+    obstacle was mapped, since the planned path may now run through it.
+    """
+    known_obstacles = set(obstacle_map)
+    handle = arlo.drive(Direction.FORWARD, DRIVE_SPEED_CMS, distance_cm=distance_cm, debug=False)
+    applied = 0.0  # Distance already applied to the particles
+    replan = False
+    try:
+        while handle.is_alive():
+            if not obstacles.is_clear(sonar(arlo, 'front')):
+                print("Segment halted: front sonar")
+                break
+            seen_landmarks, obstacle_markers = observations(camera)
+            if obstacles.marker_in_path(obstacle_markers.values()) is not None:
+                print("Segment halted: obstacle marker in path")
+                break
+
+            # Only apply motion before a measurement: every motion update adds fixed noise.
+            moved = handle.traveled - applied
+            if seen_landmarks and moved >= MEASURE_MIN_CM:
+                mcl.motion_update(particles, delta_trans_cm=moved)
+                applied += moved
+                particles, weights = update_localization(particles, weights, seen_landmarks)
+                moved = 0.0
+
+            if mcl.position_spread_cm(particles, weights) <= MAX_POSITION_SPREAD_CM:
+                x, y, theta = mcl.pose_estimate(particles, weights)
+                x, y = x + moved * math.cos(theta), y + moved * math.sin(theta)
+                record_trail(x, y)
+                map_obstacles(obstacle_markers, x, y, theta)
+                if set(obstacle_map) != known_obstacles:
+                    print("Segment halted: new obstacle mapped")
+                    replan = True
+                    break
+    finally:
+        if handle.is_alive():
+            handle.halt("segment interrupted")
+        mcl.motion_update(particles, delta_trans_cm=handle.traveled - applied)
+    return particles, weights, replan
+
+
+def perform(arlo, particles, action):
     """Perform one action; return False if drive() refused to move."""
     if action == 'forward':
-        return drive(arlo, particles, forward_cm)
+        return drive(arlo, particles, DRIVE_STEP_CM)
     if action == 'backward':
         return drive(arlo, particles, -obstacles.REVERSE_CM)
     turn(arlo, particles, -AVOID_TURN_DEG if action == 'right' else AVOID_TURN_DEG)
@@ -315,10 +359,7 @@ def visit_target(arlo, camera, particles, weights, target):
               f"dist={target_distance:.0f} cm, spread={spread:.0f} cm, "
               f"RRT waypoint=({waypoint[0]:.0f}, {waypoint[1]:.0f})")
 
-        forward_cm = DRIVE_STEP_CM
-        if not detouring:
-            forward_cm = forward_step(arlo, waypoint_distance, waypoint_index == len(path) - 1)
-        action = choose_action(arlo, obstacle_markers, failed_action, forward_cm)
+        action = choose_action(arlo, obstacle_markers, failed_action)
         if action != 'forward':
             detouring = True
         elif not detouring and abs(math.degrees(target_bearing)) > TURN_TOLERANCE_DEG:
@@ -326,7 +367,17 @@ def visit_target(arlo, camera, particles, weights, target):
             failed_action = None
             continue
 
-        success = perform(arlo, particles, action, forward_cm)
+        if action == 'forward' and not detouring:
+            particles, weights, replan = drive_segment(
+                arlo, camera, particles, weights,
+                segment_distance(waypoint_distance, waypoint_index == len(path) - 1),
+            )
+            if replan:
+                path = None
+            failed_action = None
+            continue
+
+        success = perform(arlo, particles, action)
         failed_action = None if success else action
         if success and action == 'forward':
             detouring = False
