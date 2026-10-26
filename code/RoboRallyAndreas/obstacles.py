@@ -9,6 +9,10 @@ REVERSE_CM = 10.0    # Length of one reverse step
 CAMERA_LOOKAHEAD_CM = 50     # React to obstacle markers closer than this
 PATH_HALF_WIDTH_CM = 30      # Half robot width plus obstacle radius and margin
 
+# Mapped obstacles: centres in world cm, placed from camera sightings.
+OBSTACLE_RADIUS_CM = 20      # Marker face to obstacle centre
+MAP_CLEARANCE_CM = 50        # Robot centre to obstacle centre when passing one
+
 
 def is_clear(reading_cm, distance_cm=0.0):
     """True when moving distance_cm towards a sonar reading still leaves CLEARANCE_CM."""

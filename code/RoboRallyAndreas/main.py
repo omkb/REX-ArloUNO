@@ -45,31 +45,50 @@ STREAM_MAP = True             # Stream the particle map to http://<robot>:STREAM
 STREAM_PORT = 8000
 MAP_MARGIN_PX = 100           # 1 px per cm, plus a margin around the landmarks
 MAP_MAX_DRAWN = 200           # Drawing all particles is slow on the Pi
+MAP_MAX_SIGHTINGS = 10        # Later sightings still move a mapped obstacle by at least 1/10
 
 streamer = None
+obstacle_map = {}  # Marker ID -> (x, y, sightings): obstacle centres in world cm
 
 
 def observations(camera):
     """Read one image and return (seen_landmarks, obstacle_markers).
 
     seen_landmarks is {name: (cm, bearing_rad)}; every other marker is an obstacle,
-    returned as a list of (cm, bearing_rad).
+    returned as {marker_id: (cm, bearing_rad)}.
     """
     ids, distances, angles = camera.detect_aruco_objects(camera.get_next_frame())
     if ids is None:
-        return {}, []
-    seen_landmarks, obstacle_markers = {}, []
+        return {}, {}
+    seen_landmarks, obstacle_markers = {}, {}
     for marker_id, distance, angle in zip(ids, distances, angles):
-        name = LANDMARK_BY_MARKER.get(int(marker_id))
-        if name is None:
-            obstacle_markers.append((float(distance), float(angle)))
-        elif name not in seen_landmarks or distance < seen_landmarks[name][0]:
-            seen_landmarks[name] = (float(distance), float(angle))
+        marker_id = int(marker_id)
+        name = LANDMARK_BY_MARKER.get(marker_id)
+        seen = seen_landmarks if name is not None else obstacle_markers
+        key = name if name is not None else marker_id
+        if key not in seen or distance < seen[key][0]:
+            seen[key] = (float(distance), float(angle))
     return seen_landmarks, obstacle_markers
 
 
-def draw_map(particles, weights, target=None):
-    """Draw landmarks, particles and the pose estimate (BGR image, y-axis up)."""
+def map_obstacles(obstacle_markers, x, y, theta):
+    """Place seen obstacle markers on the map, averaging repeated sightings."""
+    for marker_id, (distance, bearing) in obstacle_markers.items():
+        reach = distance + obstacles.OBSTACLE_RADIUS_CM
+        ox = x + reach * math.cos(theta + bearing)
+        oy = y + reach * math.sin(theta + bearing)
+        if marker_id in obstacle_map:
+            mx, my, n = obstacle_map[marker_id]
+            n = min(n + 1, MAP_MAX_SIGHTINGS)
+            ox, oy = mx + (ox - mx) / n, my + (oy - my) / n
+        else:
+            n = 1
+            print(f"Mapped obstacle {marker_id} at ({ox:.0f}, {oy:.0f})")
+        obstacle_map[marker_id] = (ox, oy, n)
+
+
+def draw_map(particles, weights, target=None, waypoint=None):
+    """Draw landmarks, obstacles, particles and the pose estimate (BGR image, y-axis up)."""
     xs = [p[0] for p in POSITIONS.values()]
     ys = [p[1] for p in POSITIONS.values()]
     min_x, min_y = min(xs) - MAP_MARGIN_PX, min(ys) - MAP_MARGIN_PX
@@ -86,6 +105,13 @@ def draw_map(particles, weights, target=None):
         cv2.circle(world, centre, 8, colour, 2)
         cv2.putText(world, f"{name} ({marker_id})", (centre[0] + 10, centre[1] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 1, cv2.LINE_AA)
+
+    for marker_id, (ox, oy, _) in obstacle_map.items():
+        centre = px(ox, oy)
+        cv2.circle(world, centre, int(obstacles.OBSTACLE_RADIUS_CM), (90, 90, 90), -1)
+        cv2.circle(world, centre, int(obstacles.MAP_CLEARANCE_CM), (170, 170, 170), 1)
+        cv2.putText(world, str(marker_id), (centre[0] - 8, centre[1] + 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
 
     if particles is None:
         return world
@@ -104,15 +130,18 @@ def draw_map(particles, weights, target=None):
     cv2.circle(world, start, 6, (0, 0, 0), 2)
     cv2.line(world, start, px(x + 25 * math.cos(theta), y + 25 * math.sin(theta)),
              (0, 0, 0), 2)
+    if waypoint is not None and waypoint != POSITIONS.get(target):
+        cv2.line(world, start, px(*waypoint), (200, 0, 200), 1)
+        cv2.drawMarker(world, px(*waypoint), (200, 0, 200), cv2.MARKER_CROSS, 12, 2)
     spread = mcl.position_spread_cm(particles, weights)
     cv2.putText(world, f"({x:.0f}, {y:.0f}, {math.degrees(theta):.0f} deg) spread={spread:.0f} cm",
                 (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
     return world
 
 
-def publish_map(particles, weights, target=None):
+def publish_map(particles, weights, target=None, waypoint=None):
     if streamer is not None:
-        streamer.publish(draw_map(particles, weights, target))
+        streamer.publish(draw_map(particles, weights, target, waypoint))
 
 
 def sonar(arlo, direction):
@@ -146,19 +175,18 @@ def drive(arlo, particles, distance_cm):
     return True
 
 
-def update_localization(particles, weights, seen_landmarks, target=None):
-    """Weight particles by the seen landmarks, resample, and publish the map."""
+def update_localization(particles, weights, seen_landmarks):
+    """Weight particles by the seen landmarks and resample."""
     if mcl.measurement_update(particles, weights, seen_landmarks, POSITIONS):
         particles, weights = mcl.resample(particles, weights)
-    publish_map(particles, weights, target)
     return particles, weights
 
 
-def choose_action(arlo, obstacle_markers=(), failed_action=None):
+def choose_action(arlo, obstacle_markers, failed_action=None):
     return obstacles.choose_action(
         sonar(arlo, 'front'), sonar(arlo, 'left'),
         sonar(arlo, 'right'), sonar(arlo, 'back'),
-        obstacle_markers, distance_cm=DRIVE_STEP_CM, failed_action=failed_action
+        obstacle_markers.values(), distance_cm=DRIVE_STEP_CM, failed_action=failed_action
     )
 
 
@@ -199,6 +227,7 @@ def initialize(arlo, camera):
                 publish_map(None, None)
             else:
                 particles, weights = update_localization(particles, weights, seen_landmarks)
+                publish_map(particles, weights)
                 seen_second = seen_second or any(i != START_LANDMARK for i in seen_landmarks)
                 spread = mcl.position_spread_cm(particles, weights)
                 if seen_second and seen_landmarks and spread <= MAX_POSITION_SPREAD_CM:
@@ -220,14 +249,24 @@ def visit_target(arlo, camera, particles, weights, target):
     detouring = False
     while True:
         seen_landmarks, obstacle_markers = observations(camera)
-        particles, weights = update_localization(particles, weights, seen_landmarks, target)
+        particles, weights = update_localization(particles, weights, seen_landmarks)
         x, y, theta = mcl.pose_estimate(particles, weights)
-        target_bearing, target_distance = navigation.direction_to_target(
-            x, y, theta, *POSITIONS[target]
-        )
         spread = mcl.position_spread_cm(particles, weights)
+        if spread <= MAX_POSITION_SPREAD_CM:  # Only trust the pose for mapping when converged
+            map_obstacles(obstacle_markers, x, y, theta)
+
+        # Aim at the target, or at a waypoint beside a mapped obstacle in the way.
+        target_x, target_y = POSITIONS[target]
+        target_distance = math.hypot(target_x - x, target_y - y)
+        waypoint = navigation.detour_waypoint(
+            x, y, target_x, target_y,
+            [(ox, oy) for ox, oy, _ in obstacle_map.values()], obstacles.MAP_CLEARANCE_CM
+        )
+        target_bearing, _ = navigation.direction_to_target(x, y, theta, *waypoint)
+        publish_map(particles, weights, target, waypoint)
+        via = '' if waypoint == (target_x, target_y) else f" via ({waypoint[0]:.0f}, {waypoint[1]:.0f})"
         print(f"{target}: pose=({x:.0f}, {y:.0f}, {math.degrees(theta):.0f}°), "
-              f"dist={target_distance:.0f} cm, spread={spread:.0f} cm")
+              f"dist={target_distance:.0f} cm, spread={spread:.0f} cm{via}")
 
         if target_distance <= TARGET_DISTANCE_CM and spread <= MAX_POSITION_SPREAD_CM:
             print(f"Reached {target}")
