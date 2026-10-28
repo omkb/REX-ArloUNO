@@ -39,6 +39,8 @@ MAX_POSITION_SPREAD_CM = 55.0  # Experimental threshold, tune on the real robot
 DRIVE_STEP_CM = 30.0         # Forward step while detouring, and the shortest segment drive
 MEASURE_MIN_CM = 10.0        # While driving, update MCL from landmarks at most once per this distance
 DRIVE_SPEED_CMS = 40.0
+APPROACH_SPEED_CMS = 20.0    # Slow down to this within APPROACH_DISTANCE_CM of the target or anything ahead
+APPROACH_DISTANCE_CM = 100.0
 TURN_SPEED_DEG_S = 50.0     # Slowest real turn: wheels at SPEED_AT_PWM_MIN_CMS (lower is clamped)
 TURN_TOLERANCE_DEG = 12.0
 MAX_TURN_STEP_DEG = 180.0   # Longest single turn towards a target; 180 turns the full bearing at once
@@ -245,7 +247,9 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path, w
 
     Steers in an arc towards waypoint along the way by giving one wheel more power
     than the other, so a heading error is corrected without stopping to turn. Halts
-    early for an obstacle ahead or a newly mapped obstacle. Landmarks seen on the
+    early for an obstacle ahead or a newly mapped obstacle, and slows to
+    APPROACH_SPEED_CMS within APPROACH_DISTANCE_CM of the target landmark (by pose
+    estimate or camera) or of whatever the front sonar sees. Landmarks seen on the
     way update MCL, and the map is published every MAP_PUBLISH_INTERVAL_S. Returns
     (particles, weights, replan); replan is True when a new obstacle was mapped, since
     the planned path may now run through it.
@@ -258,10 +262,13 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path, w
     last_publish = time.monotonic()
     try:
         while handle.is_alive():
-            if not obstacles.is_clear(sonar(arlo, 'front')):
+            front = sonar(arlo, 'front')
+            if not obstacles.is_clear(front):
                 print("Segment halted: front sonar")
                 break
             seen_landmarks, obstacle_markers = observations(camera)
+            # The camera measures the target directly; the pose estimate may lag behind
+            nearest = min(front, seen_landmarks.get(target, (math.inf,))[0])
             if obstacles.marker_in_path(obstacle_markers.values()) is not None:
                 print("Segment halted: obstacle marker in path")
                 break
@@ -280,6 +287,7 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path, w
             shown = predict(particles, moved, turned)
             if mcl.position_spread_cm(particles, weights) <= MAX_POSITION_SPREAD_CM:
                 x, y, theta = mcl.pose_estimate(shown, weights)
+                nearest = min(nearest, math.dist((x, y), POSITIONS[target]))
                 record_trail(x, y)
                 map_obstacles(obstacle_markers, x, y, theta)
                 if set(obstacle_map) != known_obstacles:
@@ -294,6 +302,9 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path, w
                 handle.steer(steer)
             else:
                 handle.steer(0.0)  # Do not steer on an unreliable pose
+            if nearest <= APPROACH_DISTANCE_CM and handle.speed_limit_cms > APPROACH_SPEED_CMS:
+                print(f"Segment slowing: {nearest:.0f} cm from {target} or an obstacle")
+                handle.limit_speed(APPROACH_SPEED_CMS)
 
             if streamer is not None and time.monotonic() - last_publish >= MAP_PUBLISH_INTERVAL_S:
                 publish_map(shown, weights, target, path)
