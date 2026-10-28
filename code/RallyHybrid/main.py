@@ -52,10 +52,11 @@ SIDE_STOP_CM = 12   # ... or this close to the diagonal sonars
 ESCAPE_CM = 60      # Drive this far away from what the sonars found
 BACKUP_CM = 20
 
-SPEED_CMS = 40
+SPEED_CMS = 60      # Arlo tops out at 79
 SLOW_SPEED_CMS = 20  # Within 100 cm of the target or of anything ahead
 SCAN_STEP_DEG = 20
 AIM_DEG = 12         # Turn on the spot first when the waypoint is further off than this
+STEER_DEGS = 30      # Steering limit while driving: at 60 cm/s an arc of 115 cm radius
 
 SONAR_BEARINGS = {'front': 0.0, 'left': math.radians(45), 'right': math.radians(-45)}
 _xs, _ys = [p[0] for p in LANDMARKS.values()], [p[1] for p in LANDMARKS.values()]
@@ -323,8 +324,8 @@ class Racer:
         if self.path_blocked(pose):
             return 'replan'
         distance, bearing = relative(pose, self.path[self.waypoint])
-        # 20 deg/s at 40 cm/s is a 115 cm radius. Close to the waypoint the bearing swings.
-        handle.steer(max(-20.0, min(20.0, math.degrees(bearing))) if distance > 40 else 0.0)
+        # Close to the waypoint the bearing swings, so drive straight there
+        handle.steer(max(-STEER_DEGS, min(STEER_DEGS, math.degrees(bearing))) if distance > 40 else 0.0)
         target_distance = relative(pose, LANDMARKS[self.target])[0]
         if min(target_distance - REACH_CM, front_cm) < 100:
             handle.limit_speed(SLOW_SPEED_CMS)
