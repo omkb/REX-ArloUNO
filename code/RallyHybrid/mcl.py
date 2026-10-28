@@ -20,8 +20,13 @@ import numpy as np
 NUM_PARTICLES = 1000
 SIGMA_DISTANCE = 10.0
 SIGMA_BEARING = np.deg2rad(5.0)
-SIGMA_TRANSLATION = 5.0
-SIGMA_ROTATION = np.deg2rad(4.0)
+# Motion noise: a fixed part per update plus a part that grows with the motion, since
+# longer drives and bigger turns go further wrong. Tune on the real robot.
+SIGMA_TRANSLATION = 2.0                  # cm per drive update
+SIGMA_TRANSLATION_PER_CM = 0.05          # Extra cm per cm driven
+SIGMA_ROTATION = np.deg2rad(2.0)         # Per turn update
+SIGMA_ROTATION_PER_RAD = 0.05            # Extra radians per radian turned
+SIGMA_DRIFT_PER_CM = np.deg2rad(0.05)    # Heading drift per cm driven
 
 
 def wrap_angle(angle):
@@ -43,21 +48,33 @@ def initialize_from_landmark(landmarks, landmark_id, distance_cm, bearing_rad, n
 
 
 def motion_update(particles, delta_trans_cm=0.0, delta_rot_rad=0.0):
-    """Rotate, then translate. Update particles in place."""
+    """Update particles in place for a turn in place, a straight drive, or both at once:
+    an arc driven by unequal wheel speeds. An arc translates along its mean heading,
+    and its rotation noise is only the proportional part; the fixed part is for turns."""
     if delta_trans_cm == 0 and delta_rot_rad == 0:
         return
 
     n = len(particles)
-    theta = wrap_angle(
-        particles[:, 2] + delta_rot_rad + np.random.normal(0, SIGMA_ROTATION, n)
-    )
-    particles[:, 2] = theta
+    theta = particles[:, 2]
+    if delta_rot_rad != 0:
+        sigma_rotation = SIGMA_ROTATION_PER_RAD * abs(delta_rot_rad)
+        if delta_trans_cm == 0:
+            sigma_rotation += SIGMA_ROTATION
+        rotation = delta_rot_rad + np.random.normal(0, sigma_rotation, n)
+        theta = wrap_angle(theta + rotation / 2)  # Mean heading of the arc
 
     # Turning in place must not introduce translation noise.
     if delta_trans_cm != 0:
-        distance = delta_trans_cm + np.random.normal(0, SIGMA_TRANSLATION, n)
-        particles[:, 0] += distance * np.cos(theta)
-        particles[:, 1] += distance * np.sin(theta)
+        # Drift builds up along the drive, so translate along the mean heading.
+        drift = np.random.normal(0, SIGMA_DRIFT_PER_CM * abs(delta_trans_cm), n)
+        sigma_translation = SIGMA_TRANSLATION + SIGMA_TRANSLATION_PER_CM * abs(delta_trans_cm)
+        distance = delta_trans_cm + np.random.normal(0, sigma_translation, n)
+        particles[:, 0] += distance * np.cos(theta + drift / 2)
+        particles[:, 1] += distance * np.sin(theta + drift / 2)
+        theta = wrap_angle(theta + drift)
+    if delta_rot_rad != 0:
+        theta = wrap_angle(theta + rotation / 2)
+    particles[:, 2] = theta
 
 
 def measurement_update(particles, weights, observations, landmarks):
