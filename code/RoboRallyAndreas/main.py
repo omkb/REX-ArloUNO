@@ -46,6 +46,7 @@ TURN_TOLERANCE_DEG = 12.0
 MAX_TURN_STEP_DEG = 180.0   # Longest single turn towards a target; 180 turns the full bearing at once
 AVOID_TURN_DEG = 25.0       # Turn step when avoiding an obstacle
 TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
+GOAL_RADIUS_CM = TARGET_DISTANCE_CM / 2  # RRT paths end this far from the landmark, on its free side
 WAYPOINT_DISTANCE_CM = 20.0  # Advance to the next RRT waypoint within this distance
 STEER_GAIN = 1.0             # Turn rate (deg/s) per degree of bearing error while driving a segment
 MAX_STEER_DEG_S = 20.0       # Sharpest arc while driving; 20 deg/s at 40 cm/s is a ~115 cm radius
@@ -225,10 +226,9 @@ def choose_action(arlo, obstacle_markers, failed_action=None):
     )
 
 
-def segment_distance(waypoint_distance, final):
-    """Distance to drive towards a waypoint in one continuous segment."""
-    if final:  # Stop well inside TARGET_DISTANCE_CM instead of driving into the landmark
-        waypoint_distance -= TARGET_DISTANCE_CM / 2
+def segment_distance(waypoint_distance):
+    """Distance to drive towards a waypoint in one continuous segment. The last
+    waypoint already stops GOAL_RADIUS_CM short of the landmark."""
     return max(DRIVE_STEP_CM, waypoint_distance)
 
 
@@ -422,7 +422,7 @@ def visit_target(arlo, camera, particles, weights, target):
                 for ox, oy, _ in obstacle_map.values()
             ]
             path = rrt.plan_path((x, y), (target_x, target_y), mapped_obstacles,
-                                 RRT_BOUNDS)
+                                 RRT_BOUNDS, goal_radius=GOAL_RADIUS_CM)
             if path is None:
                 raise RuntimeError(f"RRT could not find a path to {target}")
             waypoint_index = 1
@@ -451,7 +451,7 @@ def visit_target(arlo, camera, particles, weights, target):
         if action == 'forward' and not detouring:
             particles, weights, replan = drive_segment(
                 arlo, camera, particles, weights,
-                segment_distance(waypoint_distance, waypoint_index == len(path) - 1),
+                segment_distance(waypoint_distance),
                 target, path, waypoint,
             )
             if replan:
