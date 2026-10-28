@@ -16,7 +16,7 @@ from camera import Camera
 LANDMARKS = {2: (0, 0), 6: (0, 300), 7: (400, 0), 5: (400, 300)}
 ROUTE = [2, 6, 7, 5, 2]
 
-MAX_SPREAD_CM = 20
+MAX_SPREAD_CM = 17
 TARGET_DISTANCE_CM = 53  # Approximation; calibrate against 40 cm from nearest box face
 DRIVE_STEP_CM = 40
 TURN_STEP_DEG = 10
