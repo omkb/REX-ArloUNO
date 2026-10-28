@@ -45,6 +45,9 @@ MAX_TURN_STEP_DEG = 180.0   # Longest single turn towards a target; 180 turns th
 AVOID_TURN_DEG = 25.0       # Turn step when avoiding an obstacle
 TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
 WAYPOINT_DISTANCE_CM = 20.0  # Advance to the next RRT waypoint within this distance
+STEER_GAIN = 1.0             # Turn rate (deg/s) per degree of bearing error while driving a segment
+MAX_STEER_DEG_S = 20.0       # Sharpest arc while driving; 20 deg/s at 40 cm/s is a ~115 cm radius
+STEER_MIN_DISTANCE_CM = 40.0  # Drive straight this close to the waypoint, where the bearing swings
 COURT_WIDTH_CM = 400.0       # Court spans x in [0, 400] and y in [0, 300], L1 at the origin
 COURT_HEIGHT_CM = 300.0
 COURT_MARGIN_CM = 120.0      # Drivable margin around the court; driving beyond it is not allowed
@@ -227,17 +230,30 @@ def segment_distance(waypoint_distance, final):
     return max(DRIVE_STEP_CM, waypoint_distance)
 
 
-def drive_segment(arlo, camera, particles, weights, distance_cm, target, path):
+def predict(particles, moved_cm, turned_rad):
+    """Particles moved along an arc of moved_cm that turns by turned_rad, without noise."""
+    shown = particles.copy()
+    heading = shown[:, 2] + turned_rad / 2  # Mean heading along the arc
+    shown[:, 0] += moved_cm * np.cos(heading)
+    shown[:, 1] += moved_cm * np.sin(heading)
+    shown[:, 2] = mcl.wrap_angle(shown[:, 2] + turned_rad)
+    return shown
+
+
+def drive_segment(arlo, camera, particles, weights, distance_cm, target, path, waypoint):
     """Drive distance_cm without stopping, watching the front sonar and the camera.
 
-    Halts early for an obstacle ahead or a newly mapped obstacle. Landmarks seen on the
+    Steers in an arc towards waypoint along the way by giving one wheel more power
+    than the other, so a heading error is corrected without stopping to turn. Halts
+    early for an obstacle ahead or a newly mapped obstacle. Landmarks seen on the
     way update MCL, and the map is published every MAP_PUBLISH_INTERVAL_S. Returns
     (particles, weights, replan); replan is True when a new obstacle was mapped, since
     the planned path may now run through it.
     """
     known_obstacles = set(obstacle_map)
     handle = arlo.drive(Direction.FORWARD, DRIVE_SPEED_CMS, distance_cm=distance_cm, debug=False)
-    applied = 0.0  # Distance already applied to the particles
+    applied = 0.0          # Distance already applied to the particles
+    applied_turn = 0.0     # Heading change (rad) already applied to the particles
     replan = False
     last_publish = time.monotonic()
     try:
@@ -252,32 +268,41 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path):
 
             # Only apply motion before a measurement: every motion update adds fixed noise.
             moved = handle.traveled - applied
+            turned = math.radians(handle.turned) - applied_turn
             if seen_landmarks and moved >= MEASURE_MIN_CM:
-                mcl.motion_update(particles, delta_trans_cm=moved)
+                mcl.motion_update(particles, moved, turned)
                 applied += moved
+                applied_turn += turned
                 particles, weights = update_localization(particles, weights, seen_landmarks)
-                moved = 0.0
+                moved = turned = 0.0
 
+            # The particles with the motion not yet applied to them, for steering and the map
+            shown = predict(particles, moved, turned)
             if mcl.position_spread_cm(particles, weights) <= MAX_POSITION_SPREAD_CM:
-                x, y, theta = mcl.pose_estimate(particles, weights)
-                x, y = x + moved * math.cos(theta), y + moved * math.sin(theta)
+                x, y, theta = mcl.pose_estimate(shown, weights)
                 record_trail(x, y)
                 map_obstacles(obstacle_markers, x, y, theta)
                 if set(obstacle_map) != known_obstacles:
                     print("Segment halted: new obstacle mapped")
                     replan = True
                     break
+                bearing, distance = navigation.direction_to_target(x, y, theta, *waypoint)
+                steer = 0.0
+                if distance > STEER_MIN_DISTANCE_CM:
+                    steer = max(-MAX_STEER_DEG_S,
+                                min(MAX_STEER_DEG_S, STEER_GAIN * math.degrees(bearing)))
+                handle.steer(steer)
+            else:
+                handle.steer(0.0)  # Do not steer on an unreliable pose
 
             if streamer is not None and time.monotonic() - last_publish >= MAP_PUBLISH_INTERVAL_S:
-                shown = particles.copy()  # Show the distance not yet applied to the particles
-                shown[:, 0] += moved * np.cos(shown[:, 2])
-                shown[:, 1] += moved * np.sin(shown[:, 2])
                 publish_map(shown, weights, target, path)
                 last_publish = time.monotonic()
     finally:
         if handle.is_alive():
             handle.halt("segment interrupted")
-        mcl.motion_update(particles, delta_trans_cm=handle.traveled - applied)
+        mcl.motion_update(particles, handle.traveled - applied,
+                          math.radians(handle.turned) - applied_turn)
     return particles, weights, replan
 
 
@@ -416,7 +441,7 @@ def visit_target(arlo, camera, particles, weights, target):
             particles, weights, replan = drive_segment(
                 arlo, camera, particles, weights,
                 segment_distance(waypoint_distance, waypoint_index == len(path) - 1),
-                target, path,
+                target, path, waypoint,
             )
             if replan:
                 path = None

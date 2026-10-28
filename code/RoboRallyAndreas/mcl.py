@@ -48,15 +48,20 @@ def initialize_from_landmark(landmarks, landmark_id, distance_cm, bearing_rad, n
 
 
 def motion_update(particles, delta_trans_cm=0.0, delta_rot_rad=0.0):
-    """Rotate, then translate. Update particles in place."""
+    """Update particles in place for a turn in place, a straight drive, or both at once:
+    an arc driven by unequal wheel speeds. An arc translates along its mean heading,
+    and its rotation noise is only the proportional part; the fixed part is for turns."""
     if delta_trans_cm == 0 and delta_rot_rad == 0:
         return
 
     n = len(particles)
     theta = particles[:, 2]
     if delta_rot_rad != 0:
-        sigma_rotation = SIGMA_ROTATION + SIGMA_ROTATION_PER_RAD * abs(delta_rot_rad)
-        theta = wrap_angle(theta + delta_rot_rad + np.random.normal(0, sigma_rotation, n))
+        sigma_rotation = SIGMA_ROTATION_PER_RAD * abs(delta_rot_rad)
+        if delta_trans_cm == 0:
+            sigma_rotation += SIGMA_ROTATION
+        rotation = delta_rot_rad + np.random.normal(0, sigma_rotation, n)
+        theta = wrap_angle(theta + rotation / 2)  # Mean heading of the arc
 
     # Turning in place must not introduce translation noise.
     if delta_trans_cm != 0:
@@ -67,6 +72,8 @@ def motion_update(particles, delta_trans_cm=0.0, delta_rot_rad=0.0):
         particles[:, 0] += distance * np.cos(theta + drift / 2)
         particles[:, 1] += distance * np.sin(theta + drift / 2)
         theta = wrap_angle(theta + drift)
+    if delta_rot_rad != 0:
+        theta = wrap_angle(theta + rotation / 2)
     particles[:, 2] = theta
 
 

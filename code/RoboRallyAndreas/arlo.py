@@ -37,6 +37,14 @@ class DriveHandle:
         self._thread = thread
         self._halt_signal = halt_signal
         self.traveled = 0.0  # Estimated cm (drive) or degrees (turn) covered so far
+        self.turned = 0.0    # Estimated heading change in degrees while driving (positive = left)
+        self.turn_rate_degs = 0.0  # Requested steering while driving, see steer()
+
+    def steer(self, turn_rate_degs: float):
+        """Drive in an arc: turn at turn_rate_degs while driving (positive = left/CCW),
+        by speeding up one wheel and slowing the other. Takes effect on the next
+        control step; 0 drives straight. Only used by drive()."""
+        self.turn_rate_degs = turn_rate_degs
 
     def halt(self, reason: str = "stopped"):
         """Stop the robot immediately, skipping any deceleration ramp,
@@ -108,6 +116,8 @@ class Arlo(object):
         drive immediately, or .wait() to block until it finishes on its
         own (only returns on its own if distance_cm was given).
         You can also call arlo.stop() to halt whatever is currently driving.
+        Call .steer() on the handle to curve while driving; .turned reports the
+        resulting heading change.
         """
         # terminate any prior drive before starting a new one
         if self._current_handle is not None:
@@ -139,14 +149,26 @@ class Arlo(object):
         traveled = 0.0
         t_prev = time.monotonic()
         last_pwm = None
+        # Speeds actually commanded after PWM rounding: (mean cm/s, turn rate deg/s)
+        applied = (current_speed, 0.0)
 
-        def send_pwm(pwm):
-            nonlocal last_pwm
+        def send_speed(speed):
+            """Command both wheels for speed plus the handle's steering."""
+            nonlocal last_pwm, applied
+            pwm = self._steered_pwm(speed, handle.turn_rate_degs, direction)
             if pwm != last_pwm:
                 #print(f"  -> pwm={pwm}")
                 with self.serial_lock:
-                    self.robot.go_diff(pwm, pwm, direction, direction)
+                    self.robot.go_diff(*pwm, direction, direction)
                 last_pwm = pwm
+                applied = self._pwm_motion(pwm, direction)
+
+        def advance(dt):
+            """Integrate distance and heading over dt at the commanded speeds."""
+            nonlocal traveled
+            traveled += applied[0] * dt
+            handle.traveled = traveled
+            handle.turned += applied[1] * dt
 
         def halted():
             if halt_signal.is_set():
@@ -179,23 +201,26 @@ class Arlo(object):
             dt = now - t_prev
             t_prev = now
 
+            advance(dt)
             current_speed = min(target_speed, current_speed + a * dt)
-            send_pwm(self._speed_to_pwm(current_speed))
-
-            traveled += current_speed * dt
-            handle.traveled = traveled
+            send_speed(current_speed)
             time.sleep(self.CONTROL_DT_S)
 
         # --- cruise phase ---
         if debug:
             print("drive: cruise phase")
-        send_pwm(self._speed_to_pwm(target_speed))
+        current_speed = target_speed
+        send_speed(current_speed)
 
         if indefinite:
             # cruise forever — only .halt() / arlo.stop() ends this
             while True:
                 if halted():
                     return
+                now = time.monotonic()
+                advance(now - t_prev)
+                t_prev = now
+                send_speed(current_speed)
                 time.sleep(self.CONTROL_DT_S)
 
         cruise_end = distance_cm - d_decel
@@ -206,8 +231,8 @@ class Arlo(object):
             dt = now - t_prev
             t_prev = now
 
-            traveled += target_speed * dt
-            handle.traveled = traveled
+            advance(dt)
+            send_speed(current_speed)
             time.sleep(self.CONTROL_DT_S)
 
         # --- deceleration phase ---
@@ -220,17 +245,35 @@ class Arlo(object):
             dt = now - t_prev
             t_prev = now
 
+            advance(dt)
             current_speed = max(v0, current_speed - a * dt)
-            send_pwm(self._speed_to_pwm(current_speed))
-
-            traveled += current_speed * dt
-            handle.traveled = traveled
+            send_speed(current_speed)
             time.sleep(self.CONTROL_DT_S)
 
         if debug:
             print("drive: halt")
         with self.serial_lock:
             self.robot.stop()
+
+    def _steered_pwm(self, speed_cms, turn_rate_degs, direction):
+        """(left, right) PWM for driving at speed_cms while turning at turn_rate_degs
+        (positive = left). When a wheel would leave the PWM range, both wheels shift
+        together so the speed difference, and thereby the turn rate, is kept."""
+        half_diff = self._angspeed_degs_to_wheel_cms(turn_rate_degs)  # Each wheel off by this
+        if direction == Direction.BACKWARD:
+            half_diff = -half_diff  # Reversing, the slower wheel is on the turn side
+        left, right = speed_cms - half_diff, speed_cms + half_diff
+        shift = max(0.0, self.SPEED_AT_PWM_MIN_CMS - min(left, right))
+        shift -= max(0.0, max(left, right) + shift - self.SPEED_AT_PWM_MAX_CMS)
+        return self._speed_to_pwm(left + shift), self._speed_to_pwm(right + shift)
+
+    def _pwm_motion(self, pwm, direction):
+        """(mean speed cm/s, turn rate deg/s) that a (left, right) PWM pair produces."""
+        left, right = (self.SPEED_SLOPE * p + self.SPEED_INTERCEPT for p in pwm)
+        turn_rate = math.degrees((right - left) / self.TRACK_WIDTH_CM)
+        if direction == Direction.BACKWARD:
+            turn_rate = -turn_rate
+        return (left + right) / 2, turn_rate
 
     def _wheel_cms_to_angspeed_degs(self, wheel_speed_cms):
         """Per-wheel linear speed (cm/s) -> robot angular speed (deg/s),
