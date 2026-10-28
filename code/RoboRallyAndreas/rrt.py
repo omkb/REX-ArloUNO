@@ -39,6 +39,31 @@ def _segment_in_collision(start, end, obstacles):
     return False
 
 
+def path_in_collision(points, obstacles):
+    """True when any segment between consecutive points crosses an obstacle circle. As
+    in plan_path, the first segment may leave obstacles that contain its start."""
+    if len(points) < 2:
+        return False
+    start_obstacles = tuple(o for o in obstacles if _in_collision(points[0], (o,)))
+    if start_obstacles:
+        other_obstacles = tuple(o for o in obstacles if o not in start_obstacles)
+        if not _leaves_obstacles(points[0], points[1], start_obstacles) or (
+            _segment_in_collision(points[0], points[1], other_obstacles)
+        ):
+            return True
+        points = points[1:]
+    return any(_segment_in_collision(a, b, obstacles) for a, b in zip(points, points[1:]))
+
+
+def _leaves_obstacles(start, end, start_obstacles):
+    """True when the segment from start heads straight away from the centre of every
+    obstacle containing start, so it gets no closer to any of them."""
+    return all(
+        (end[0] - start[0]) * (start[0] - x) + (end[1] - start[1]) * (start[1] - y) >= 0
+        for x, y, _ in start_obstacles
+    )
+
+
 def _simplify_path(path, obstacles):
     simplified = [path[0]]
     current_index = 0
@@ -102,6 +127,9 @@ def plan_path(start, goal, obstacles, bounds, goal_radius=0.0, max_iterations=50
     With a ``goal_radius``, any free point that close to the goal will do, so the goal
     itself may lie inside an obstacle (e.g. a landmark with an obstacle next to it). The
     path then ends goal_radius short of the goal, or at the first point found within it.
+
+    A start inside obstacles (e.g. one mapped onto the robot) is allowed: the first edge
+    must then head away from their centres and end outside every obstacle.
     """
     start = (float(start[0]), float(start[1]))
     goal = (float(goal[0]), float(goal[1]))
@@ -110,8 +138,14 @@ def plan_path(start, goal, obstacles, bounds, goal_radius=0.0, max_iterations=50
     )
 
     goal_free = not _in_collision(goal, obstacles)
-    if _in_collision(start, obstacles) or (goal_radius <= 0 and not goal_free):
+    if goal_radius <= 0 and not goal_free:
         return None
+    start_obstacles = tuple(
+        obstacle for obstacle in obstacles if _in_collision(start, (obstacle,))
+    )
+    # Obstacles that each tree edge is checked against: the start's own obstacles only
+    # count for edges that do not start at the start, see _leaves_obstacles.
+    other_obstacles = tuple(o for o in obstacles if o not in start_obstacles)
     if _distance(start, goal) <= goal_radius:
         return [start, start]
     if goal_free and not _segment_in_collision(start, goal, obstacles):
@@ -145,9 +179,13 @@ def plan_path(start, goal, obstacles, bounds, goal_radius=0.0, max_iterations=50
             nearest[0] + (sample[0] - nearest[0]) * scale,
             nearest[1] + (sample[1] - nearest[1]) * scale,
         )
-        if _in_collision(new_point, obstacles) or _segment_in_collision(
-            nearest, new_point, obstacles
-        ):
+        if nearest_index == 0 and start_obstacles:
+            blocked = not _leaves_obstacles(start, new_point, start_obstacles) or (
+                _segment_in_collision(nearest, new_point, other_obstacles)
+            )
+        else:
+            blocked = _segment_in_collision(nearest, new_point, obstacles)
+        if blocked or _in_collision(new_point, obstacles):
             continue
 
         tree.append((new_point, nearest_index))

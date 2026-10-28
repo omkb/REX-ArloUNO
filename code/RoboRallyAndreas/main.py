@@ -242,19 +242,38 @@ def predict(particles, moved_cm, turned_rad):
     return shown
 
 
-def drive_segment(arlo, camera, particles, weights, distance_cm, target, path, waypoint):
+def no_go_zones():
+    """Mapped obstacles as (x, y, radius) circles the robot centre must stay out of."""
+    return [(ox, oy, obstacles.MAP_CLEARANCE_CM) for ox, oy, _ in obstacle_map.values()]
+
+
+def path_blocked(path, waypoint_index, x, y):
+    """True when the rest of the path crosses a no-go zone: the planned segments from
+    the current one on, or the line from the robot to its waypoint, where it steers.
+    Obstacles are mapped after planning, and repeated sightings move them."""
+    zones = no_go_zones()
+    rest = path[waypoint_index - 1:]
+    if rrt.path_in_collision(rest, zones):
+        return True
+    # From inside a zone every line is blocked; leaving it is the planned segment's job
+    return (not any(math.dist((x, y), (ox, oy)) <= r for ox, oy, r in zones)
+            and rrt.path_in_collision([(x, y), path[waypoint_index]], zones))
+
+
+def drive_segment(arlo, camera, particles, weights, distance_cm, target, path,
+                  waypoint_index):
     """Drive distance_cm without stopping, watching the front sonar and the camera.
 
-    Steers in an arc towards waypoint along the way by giving one wheel more power
-    than the other, so a heading error is corrected without stopping to turn. Halts
-    early for an obstacle ahead or a newly mapped obstacle, and slows to
+    Steers in an arc towards path[waypoint_index] along the way by giving one wheel
+    more power than the other, so a heading error is corrected without stopping to
+    turn. Halts early for an obstacle ahead or when the rest of the path runs through
+    a no-go zone (see path_blocked), and slows to
     APPROACH_SPEED_CMS within APPROACH_DISTANCE_CM of the target landmark (by pose
     estimate or camera) or of whatever the front sonar sees. Landmarks seen on the
     way update MCL, and the map is published every MAP_PUBLISH_INTERVAL_S. Returns
-    (particles, weights, replan); replan is True when a new obstacle was mapped, since
-    the planned path may now run through it.
+    (particles, weights, replan); replan is True when the path ran into a no-go zone.
     """
-    known_obstacles = set(obstacle_map)
+    waypoint = path[waypoint_index]
     handle = arlo.drive(Direction.FORWARD, DRIVE_SPEED_CMS, distance_cm=distance_cm, debug=False)
     applied = 0.0          # Distance already applied to the particles
     applied_turn = 0.0     # Heading change (rad) already applied to the particles
@@ -290,8 +309,8 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path, w
                 nearest = min(nearest, math.dist((x, y), POSITIONS[target]))
                 record_trail(x, y)
                 map_obstacles(obstacle_markers, x, y, theta)
-                if set(obstacle_map) != known_obstacles:
-                    print("Segment halted: new obstacle mapped")
+                if obstacle_markers and path_blocked(path, waypoint_index, x, y):
+                    print("Segment halted: path runs through a no-go zone")
                     replan = True
                     break
                 bearing, distance = navigation.direction_to_target(x, y, theta, *waypoint)
@@ -393,7 +412,7 @@ def survey_leg(arlo, camera, particles, weights, target):
 
 def visit_target(arlo, camera, particles, weights, target):
     """Survey the leg, then plan and follow an RRT path to the target, replanning
-    when new obstacles are mapped on the way."""
+    whenever the rest of the path runs through a no-go zone."""
     particles, weights = survey_leg(arlo, camera, particles, weights, target)
     failed_action = None
     detouring = False
@@ -406,7 +425,6 @@ def visit_target(arlo, camera, particles, weights, target):
         spread = mcl.position_spread_cm(particles, weights)
         if spread <= MAX_POSITION_SPREAD_CM:  # Only trust the pose for mapping when converged
             record_trail(x, y)
-            known_obstacles = set(obstacle_map)
             map_obstacles(obstacle_markers, x, y, theta)
 
         target_x, target_y = POSITIONS[target]
@@ -416,12 +434,8 @@ def visit_target(arlo, camera, particles, weights, target):
             return particles, weights
 
         if path is None or (spread <= MAX_POSITION_SPREAD_CM
-                            and set(obstacle_map) != known_obstacles):
-            mapped_obstacles = [
-                (ox, oy, obstacles.MAP_CLEARANCE_CM)
-                for ox, oy, _ in obstacle_map.values()
-            ]
-            path = rrt.plan_path((x, y), (target_x, target_y), mapped_obstacles,
+                            and path_blocked(path, waypoint_index, x, y)):
+            path = rrt.plan_path((x, y), (target_x, target_y), no_go_zones(),
                                  RRT_BOUNDS, goal_radius=GOAL_RADIUS_CM)
             if path is None:
                 raise RuntimeError(f"RRT could not find a path to {target}")
@@ -452,7 +466,7 @@ def visit_target(arlo, camera, particles, weights, target):
             particles, weights, replan = drive_segment(
                 arlo, camera, particles, weights,
                 segment_distance(waypoint_distance),
-                target, path, waypoint,
+                target, path, waypoint_index,
             )
             if replan:
                 path = None
