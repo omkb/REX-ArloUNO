@@ -29,6 +29,7 @@ Two things keep the layers from working against each other:
 Nothing gives up: every dead end leads to another escape, search or turn.
 
 Run on the robot:  python3 -u main.py
+and watch the map at http://protoarlo.local:8000/ (mapview.py).
 """
 import math
 import time
@@ -37,6 +38,7 @@ import avoid
 from avoid import VISIT_CM, BOX_RADIUS_CM, PASS_CM, LANDMARK_PASS_CM, RING_CM
 from hardware import Hardware
 from localization import Localizer
+from mapview import MapView
 
 # ArUco ID -> (x, y) in cm. L1 is ID 1 at the origin, L2 is ID 2 straight ahead of it, etc.
 LANDMARKS = {1: (0, 0), 2: (0, 300), 3: (400, 0), 4: (400, 300)}
@@ -51,8 +53,11 @@ LOOKAHEAD_CM = 150   # Obstacles further away than this do not matter yet
 
 
 class Racer:
-    def __init__(self, hardware):
+    def __init__(self, hardware, view=None):
         self.hw = hardware
+        self.view = view
+        self.target = ROUTE[0]
+        self.heading = None     # World direction of the last chosen heading, for the map
         self.localizer = Localizer(LANDMARKS)
         self.obstacle_map = {}  # Obstacle marker id -> world (x, y) of the box centre
         self.bumps = []         # World (x, y) of what the sonar stopped us for, this leg
@@ -66,9 +71,10 @@ class Racer:
         start = time.monotonic()
         self.localize()
         for target in ROUTE:
-            print(f"--- Next target: L{target}")
+            self.target = target
+            self.log(f"--- Next target: L{target}")
             self.go_to(target)
-            print(f"Reached L{target} after {time.monotonic() - start:.0f} s")
+            self.log(f"Reached L{target} after {time.monotonic() - start:.0f} s")
 
     def go_to(self, target):
         self.side = 0
@@ -97,8 +103,10 @@ class Racer:
             detour = heading != bearing
             if detour:
                 self.side = 1 if avoid.wrap(heading - bearing) > 0 else -1
-            print(f"L{target}: {distance:.0f} cm at {math.degrees(bearing):.0f} deg, "
-                  f"heading {math.degrees(heading):.0f} deg")
+            pose = self.localizer.pose()
+            self.heading = None if pose is None else pose[2] + heading
+            self.log(f"L{target}: {distance:.0f} cm at {math.degrees(bearing):.0f} deg, "
+                     f"heading {math.degrees(heading):.0f} deg")
 
             self.turn(math.degrees(heading))
             known = set(markers) | set(self.obstacle_map)
@@ -107,7 +115,7 @@ class Racer:
             if stopped is None and not detour:
                 self.side = 0  # A clean step towards the goal: obstacles are behind us
             elif stopped is not None:
-                print(f"Drive stopped: {stopped}")
+                self.log(f"Drive stopped: {stopped}")
 
     def reached(self, target, markers, sonar):
         """Within VISIT_CM of the target, seen by the camera or by the front sonar.
@@ -141,7 +149,7 @@ class Racer:
         self.turn(math.degrees(bearing))
         time.sleep(0.2)
         markers = self.look()
-        print(f"On the ring around L{target} by MCL; camera sees {markers.get(target)}")
+        self.log(f"On the ring around L{target} by MCL; camera sees {markers.get(target)}")
         return target not in markers or self.reached(target, markers, self.hw.sonar())
 
     def goal(self, target, markers):
@@ -204,8 +212,8 @@ class Racer:
         zone), and then drive COMMIT_CM. Afterwards we keep passing on that side.
         """
         self.side = avoid.open_side(sonar)
-        self.remember_bump(sonar, target)
-        print(f"Escape to the {'left' if self.side > 0 else 'right'}: {sonar}")
+        self.remember_bump(sonar)
+        self.log(f"Escape to the {'left' if self.side > 0 else 'right'}: {sonar}")
 
         if avoid.all_blocked(sonar):
             self.drive(-BACKUP_CM)
@@ -219,10 +227,11 @@ class Racer:
         # A full turn without room: back up and look again
         self.drive(-BACKUP_CM)
 
-    def remember_bump(self, sonar, target):
+    def remember_bump(self, sonar):
         """Put what the closest front sonar sees on the map, so we plan around it later.
 
-        Not when it is the target itself: we must not plan around where we are going.
+        Not when it is a landmark: we know where those are, and must not plan around
+        the target we are going to.
         """
         pose = self.localizer.pose()
         if pose is None:
@@ -230,12 +239,12 @@ class Racer:
         name = min(avoid.SONAR_ANGLES, key=lambda s: sonar[s])
         distance = avoid.ROBOT_RADIUS_CM + sonar[name] + BOX_RADIUS_CM
         bump = avoid.absolute(pose, distance, avoid.SONAR_ANGLES[name])
-        if math.dist(bump, LANDMARKS[target]) > PASS_CM:
+        if all(math.dist(bump, point) > PASS_CM for point in LANDMARKS.values()):
             self.bumps.append(bump)
 
     def localize(self):
         """Before the race: turn on the spot until two landmarks have fixed our pose."""
-        print("Localizing")
+        self.log("Localizing")
         self.look()
         for _ in range(360 // SCAN_STEP_DEG):
             if self.localizer.pose() is not None:
@@ -247,7 +256,7 @@ class Racer:
 
     def search(self, target):
         """We neither see the target nor know where we are: turn and look until we do."""
-        print(f"Searching for L{target}")
+        self.log(f"Searching for L{target}")
         for _ in range(360 // SCAN_STEP_DEG):
             self.turn(SCAN_STEP_DEG)
             time.sleep(0.2)  # Let the camera deliver a sharp picture
@@ -266,13 +275,23 @@ class Racer:
         if pose is None:
             for i, seen in obstacles.items():
                 self.unplaced[i] = avoid.absolute(self.odometry, *seen)
+            self.show()
             return markers
         for i, point in self.unplaced.items():
             self.obstacle_map[i] = avoid.absolute(pose, *avoid.relative(self.odometry, point))
         self.unplaced = {}
         for i, seen in obstacles.items():
             self.obstacle_map[i] = avoid.absolute(pose, *seen)
+        self.show()
         return markers
+
+    def log(self, message):
+        print(message)
+        self.show(message)
+
+    def show(self, status=''):
+        if self.view is not None:
+            self.view.draw(self, self.target, status)
 
     # Every movement goes through these two, so MCL always knows how we moved
     def turn(self, degrees):
@@ -289,15 +308,18 @@ class Racer:
 
 
 def main():
+    view = MapView(LANDMARKS)  # Start the stream first, so the browser can connect
     input("Point the robot at L1 and press Enter to start the race... ")
     hardware = Hardware()
     try:
-        Racer(hardware).run()
+        Racer(hardware, view).run()
         print("Race complete")
+        input("Press Enter to stop the map stream... ")
     except KeyboardInterrupt:
         print("Interrupted")
     finally:
         hardware.close()
+        view.close()
 
 
 if __name__ == '__main__':
