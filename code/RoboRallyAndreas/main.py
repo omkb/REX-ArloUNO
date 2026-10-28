@@ -23,7 +23,7 @@ from camera import Camera
 # Landmark name -> (ArUco marker ID, (x, y)). Route goes L1, L2, L3, L4, L1.
 LANDMARKS = {
     'L1': (7, (0.0, 0.0)),
-    'L2': (2, (0.0, 300.0)),
+    'L2': (11, (0.0, 300.0)),
     'L3': (6, (400.0, 0.0)),
     'L4': (1, (400.0, 300.0)),
 }
