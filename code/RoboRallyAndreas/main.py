@@ -45,6 +45,11 @@ MAX_TURN_STEP_DEG = 180.0   # Longest single turn towards a target; 180 turns th
 AVOID_TURN_DEG = 25.0       # Turn step when avoiding an obstacle
 TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
 WAYPOINT_DISTANCE_CM = 20.0  # Advance to the next RRT waypoint within this distance
+COURT_WIDTH_CM = 400.0       # Court spans x in [0, 400] and y in [0, 300], L1 at the origin
+COURT_HEIGHT_CM = 300.0
+COURT_MARGIN_CM = 120.0      # Drivable margin around the court; driving beyond it is not allowed
+RRT_BOUNDS = (-COURT_MARGIN_CM, COURT_WIDTH_CM + COURT_MARGIN_CM,
+              -COURT_MARGIN_CM, COURT_HEIGHT_CM + COURT_MARGIN_CM)
 
 STREAM_MAP = True             # Stream the particle map to http://<robot>:STREAM_PORT/
 STREAM_PORT = 8000
@@ -380,7 +385,8 @@ def visit_target(arlo, camera, particles, weights, target):
                 (ox, oy, obstacles.MAP_CLEARANCE_CM)
                 for ox, oy, _ in obstacle_map.values()
             ]
-            path = rrt.plan_path((x, y), (target_x, target_y), mapped_obstacles)
+            path = rrt.plan_path((x, y), (target_x, target_y), mapped_obstacles,
+                                 RRT_BOUNDS)
             if path is None:
                 raise RuntimeError(f"RRT could not find a path to {target}")
             waypoint_index = 1

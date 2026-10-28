@@ -4,7 +4,6 @@ import random
 
 
 EXPAND_DISTANCE_CM = 30.0
-BOUNDARY_MARGIN_CM = 100.0
 GOAL_SAMPLE_PROBABILITY = 0.1
 
 
@@ -56,10 +55,12 @@ def _simplify_path(path, obstacles):
     return simplified
 
 
-def plan_path(start, goal, obstacles, max_iterations=5000):
+def plan_path(start, goal, obstacles, bounds, max_iterations=5000):
     """Return a simplified collision-free path, or None if planning fails.
 
-    Obstacles are ``(x, y, radius_cm)`` circles. Coordinates and radii use cm.
+    Obstacles are ``(x, y, radius_cm)`` circles. ``bounds`` is the drivable rectangle
+    ``(x_min, x_max, y_min, y_max)``; samples are drawn only inside it, and since the
+    rectangle is convex every edge between them stays inside too. Coordinates and radii use cm.
     """
     start = (float(start[0]), float(start[1]))
     goal = (float(goal[0]), float(goal[1]))
@@ -72,14 +73,7 @@ def plan_path(start, goal, obstacles, max_iterations=5000):
     if not _segment_in_collision(start, goal, obstacles):
         return [start, goal]
 
-    x_min = min(start[0], goal[0], *(x - radius for x, _, radius in obstacles))
-    x_max = max(start[0], goal[0], *(x + radius for x, _, radius in obstacles))
-    y_min = min(start[1], goal[1], *(y - radius for _, y, radius in obstacles))
-    y_max = max(start[1], goal[1], *(y + radius for _, y, radius in obstacles))
-    x_min -= BOUNDARY_MARGIN_CM
-    x_max += BOUNDARY_MARGIN_CM
-    y_min -= BOUNDARY_MARGIN_CM
-    y_max += BOUNDARY_MARGIN_CM
+    x_min, x_max, y_min, y_max = (float(limit) for limit in bounds)
 
     tree = [(start, None)]
     for _ in range(max_iterations):
