@@ -320,16 +320,6 @@ def segment_distance(waypoint_distance):
     return max(DRIVE_STEP_CM, waypoint_distance)
 
 
-def predict(particles, moved_cm, turned_rad):
-    """Particles moved along an arc of moved_cm that turns by turned_rad, without noise."""
-    shown = particles.copy()
-    heading = shown[:, 2] + turned_rad / 2  # Mean heading along the arc
-    shown[:, 0] += moved_cm * np.cos(heading)
-    shown[:, 1] += moved_cm * np.sin(heading)
-    shown[:, 2] = mcl.wrap_angle(shown[:, 2] + turned_rad)
-    return shown
-
-
 def no_go_zones():
     """Mapped obstacles and sonar bumps as (x, y, radius) circles the robot centre must
     stay out of."""
@@ -408,9 +398,11 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path,
                 particles, weights = update_localization(particles, weights, seen_landmarks)
                 moved = turned = 0.0
 
-            # The particles with the motion not yet applied to them, for steering and the map
-            shown = predict(particles, moved, turned)
-            if mcl.position_spread_cm(particles, weights) <= MAX_POSITION_SPREAD_CM:
+            # A copy with the motion not yet applied (with its noise), for the spread, steering
+            # and the map; the real particles only get it before a measurement.
+            shown = particles.copy()
+            mcl.motion_update(shown, moved, turned)
+            if mcl.position_spread_cm(shown, weights) <= MAX_POSITION_SPREAD_CM:
                 x, y, theta = mcl.pose_estimate(shown, weights)
                 nearest = min(nearest, math.dist((x, y), POSITIONS[target]))
                 record_trail(x, y)
