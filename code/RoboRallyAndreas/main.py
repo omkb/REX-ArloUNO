@@ -478,6 +478,22 @@ def survey_leg(arlo, camera, particles, weights, target):
     return particles, weights
 
 
+def plan_to(x, y, target):
+    """RRT path to the target. If none is found, try again without the zones that cover
+    the goal area (a mis-mapped obstacle next to the landmark); the sonars still guard
+    the last stretch. Returns None if that fails too."""
+    goal = POSITIONS[target]
+    zones = no_go_zones()
+    path = rrt.plan_path((x, y), goal, zones, RRT_BOUNDS, goal_radius=GOAL_RADIUS_CM)
+    if path is None:
+        open_zones = [z for z in zones if math.dist(goal, z[:2]) > z[2] + GOAL_RADIUS_CM]
+        if len(open_zones) < len(zones):
+            print(f"Ignoring {len(zones) - len(open_zones)} no-go zone(s) covering {target}")
+            path = rrt.plan_path((x, y), goal, open_zones, RRT_BOUNDS,
+                                 goal_radius=GOAL_RADIUS_CM)
+    return path
+
+
 def visit_target(arlo, camera, particles, weights, target):
     """Survey the leg, then plan and follow an RRT path to the target, replanning
     whenever the rest of the path runs through a no-go zone."""
@@ -502,10 +518,11 @@ def visit_target(arlo, camera, particles, weights, target):
 
         if path is None or (spread <= MAX_POSITION_SPREAD_CM
                             and path_blocked(path, waypoint_index, x, y)):
-            path = rrt.plan_path((x, y), (target_x, target_y), no_go_zones(),
-                                 RRT_BOUNDS, goal_radius=GOAL_RADIUS_CM)
+            path = plan_to(x, y, target)
             if path is None:
-                raise RuntimeError(f"RRT could not find a path to {target}")
+                print(f"RRT could not find a path to {target}; moving and trying again")
+                escape(arlo, particles, weights)
+                continue
             waypoint_index = 1
             print(f"RRT planned {len(path) - 1} segment(s) to {target}")
 
