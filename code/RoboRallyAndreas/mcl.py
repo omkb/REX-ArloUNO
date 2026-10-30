@@ -22,7 +22,7 @@ SIGMA_DISTANCE = 10.0
 SIGMA_BEARING = np.deg2rad(5.0)
 # Motion noise: a fixed part per update plus a part that grows with the motion, since
 # longer drives and bigger turns go further wrong. Tune on the real robot.
-SIGMA_TRANSLATION = 2.0                  # cm per drive update
+SIGMA_TRANSLATION = 2.5                  # cm per drive update
 SIGMA_TRANSLATION_PER_CM = 0.05          # Extra cm per cm driven
 SIGMA_ROTATION = np.deg2rad(2.0)         # Per turn update
 SIGMA_ROTATION_PER_RAD = 0.05            # Extra radians per radian turned
