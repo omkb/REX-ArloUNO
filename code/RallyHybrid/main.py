@@ -221,13 +221,15 @@ class Racer:
                                    for x, y, r in self.zones(TIGHT_MARGIN_CM))
 
     def remember_bump(self, sonar):
-        """Put what the closest sonar sees on the map, unless it is a landmark."""
+        """Put what the closest sonar sees on the map, unless it is a landmark or a box
+        the camera has mapped already."""
         if not self.localizer.known():
             return
         name = min(sonar, key=sonar.get)
         bump = absolute(self.localizer.pose(), ROBOT_RADIUS_CM + sonar[name] + BOX_RADIUS_CM,
                         SONAR_BEARINGS[name])
-        if all(math.dist(bump, point) > TOUCH_CM for point in LANDMARKS.values()):
+        known = list(LANDMARKS.values()) + [(x, y) for x, y, _ in self.boxes.values()]
+        if all(math.dist(bump, point) > TOUCH_CM for point in known):
             self.bumps.append(bump)
 
     # --- Sensing
