@@ -265,6 +265,8 @@ class Racer:
         return markers
 
     def map_box(self, i, point):
+        # A sonar bump this close was this box: the camera places it better
+        self.bumps = [b for b in self.bumps if math.dist(b, point) > 2 * BOX_RADIUS_CM]
         if i not in self.boxes:
             self.log(f"Mapped box {i} at ({point[0]:.0f}, {point[1]:.0f})")
             self.boxes[i] = (*point, 1)
