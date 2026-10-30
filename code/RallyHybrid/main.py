@@ -35,7 +35,7 @@ from mapview import MapView
 
 LANDMARKS = {1: (0, 0), 2: (0, 300), 3: (400, 0), 4: (400, 300)}  # ArUco id -> centre (x, y) cm
 ROUTE = [1, 2, 3, 4, 1]
-TRACK_MARGIN_CM = 120  # The track ends this far outside the landmark boxes' outer edges
+TRACK_MARGIN_CM = 120  # The track ends this far outside the landmarks
 
 # Sizes in cm, between centres unless said otherwise
 ROBOT_RADIUS_CM = 22
@@ -59,7 +59,7 @@ AIM_DEG = 12         # Turn on the spot first when the waypoint is further off t
 
 SONAR_BEARINGS = {'front': 0.0, 'left': math.radians(45), 'right': math.radians(-45)}
 _xs, _ys = [p[0] for p in LANDMARKS.values()], [p[1] for p in LANDMARKS.values()]
-_inset = BOX_RADIUS_CM + TRACK_MARGIN_CM - ROBOT_RADIUS_CM  # How far outside the landmark centres the robot centre may go
+_inset = TRACK_MARGIN_CM - ROBOT_RADIUS_CM  # How far outside the landmarks the robot centre may go
 BOUNDS = (min(_xs) - _inset, max(_xs) + _inset, min(_ys) - _inset, max(_ys) + _inset)
 
 
@@ -265,8 +265,6 @@ class Racer:
         return markers
 
     def map_box(self, i, point):
-        # A sonar bump this close was this box: the camera places it better
-        self.bumps = [b for b in self.bumps if math.dist(b, point) > 2 * BOX_RADIUS_CM]
         if i not in self.boxes:
             self.log(f"Mapped box {i} at ({point[0]:.0f}, {point[1]:.0f})")
             self.boxes[i] = (*point, 1)
