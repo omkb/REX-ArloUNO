@@ -22,8 +22,8 @@ from camera import Camera
 # the actual *observed ArUco marker centres* before relying on localization.
 # Landmark name -> (ArUco marker ID, (x, y)). Route goes L1, L2, L3, L4, L1.
 LANDMARKS = {
-    'L1': (7, (0.0, 0.0)),
-    'L2': (2, (0.0, 300.0)),
+    'L1': (3, (0.0, 0.0)),
+    'L2': (11, (0.0, 300.0)),
     'L3': (6, (400.0, 0.0)),
     'L4': (1, (400.0, 300.0)),
 }
@@ -39,18 +39,28 @@ MAX_POSITION_SPREAD_CM = 55.0  # Experimental threshold, tune on the real robot
 DRIVE_STEP_CM = 30.0         # Forward step while detouring, and the shortest segment drive
 MEASURE_MIN_CM = 10.0        # While driving, update MCL from landmarks at most once per this distance
 DRIVE_SPEED_CMS = 40.0
+APPROACH_SPEED_CMS = 20.0    # Slow down to this within APPROACH_DISTANCE_CM of the target or anything ahead
+APPROACH_DISTANCE_CM = 100.0
 TURN_SPEED_DEG_S = 50.0     # Slowest real turn: wheels at SPEED_AT_PWM_MIN_CMS (lower is clamped)
 TURN_TOLERANCE_DEG = 12.0
 MAX_TURN_STEP_DEG = 180.0   # Longest single turn towards a target; 180 turns the full bearing at once
-AVOID_TURN_DEG = 25.0       # Turn step when avoiding an obstacle
+FRONT_STOP_CM = 25          # Sonar: stop for anything this close ahead (or behind, reversing)
+SIDE_STOP_CM = 12           # ... or this close to the diagonal sonars
+ESCAPE_CM = 60              # Drive this far away from what the sonars found
+BACKUP_CM = 20
+ESCAPE_TURN_DEG = 45
+ROBOT_RADIUS_CM = 22.0
+TOUCH_CM = 42.0             # No sonar bump this close to a landmark or a mapped obstacle
+SONAR_BEARINGS = {'front': 0.0, 'left': math.radians(45), 'right': math.radians(-45)}
 TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
+GOAL_RADIUS_CM = TARGET_DISTANCE_CM / 2  # RRT paths end this far from the landmark, on its free side
 WAYPOINT_DISTANCE_CM = 20.0  # Advance to the next RRT waypoint within this distance
 STEER_GAIN = 1.0             # Turn rate (deg/s) per degree of bearing error while driving a segment
 MAX_STEER_DEG_S = 20.0       # Sharpest arc while driving; 20 deg/s at 40 cm/s is a ~115 cm radius
 STEER_MIN_DISTANCE_CM = 40.0  # Drive straight this close to the waypoint, where the bearing swings
 COURT_WIDTH_CM = 400.0       # Court spans x in [0, 400] and y in [0, 300], L1 at the origin
 COURT_HEIGHT_CM = 300.0
-COURT_MARGIN_CM = 120.0      # Drivable margin around the court; driving beyond it is not allowed
+COURT_MARGIN_CM = 40.0       # Drivable margin around the court; driving beyond it is not allowed
 RRT_BOUNDS = (-COURT_MARGIN_CM, COURT_WIDTH_CM + COURT_MARGIN_CM,
               -COURT_MARGIN_CM, COURT_HEIGHT_CM + COURT_MARGIN_CM)
 
@@ -65,6 +75,7 @@ TRAIL_MIN_STEP_CM = 5.0       # Only extend the trail once the pose estimate mov
 streamer = None
 obstacle_map = {}  # Marker ID -> (x, y, sightings): obstacle centres in world cm
 trail = []         # Pose estimates (x, y) along the route, in world cm
+bumps = []         # (x, y) of obstacles found by the sonars this leg, in world cm
 
 
 def observations(camera):
@@ -135,6 +146,11 @@ def draw_map(particles, weights, target=None, path=None):
         cv2.putText(world, str(marker_id), (centre[0] - 8, centre[1] + 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
 
+    for bx, by in bumps:
+        centre = px(bx, by)
+        cv2.circle(world, centre, int(obstacles.OBSTACLE_RADIUS_CM), (0, 0, 160), -1)
+        cv2.circle(world, centre, int(obstacles.MAP_CLEARANCE_CM), (150, 150, 230), 1)
+
     if len(trail) > 1:
         points = np.array([px(*point) for point in trail], dtype=np.int32)
         cv2.polylines(world, [points], False, (0, 140, 255), 2, cv2.LINE_AA)
@@ -194,18 +210,98 @@ def turn(arlo, particles, degrees):
         mcl.motion_update(particles, delta_rot_rad=math.radians(degrees))
 
 
-def drive(arlo, particles, distance_cm):
-    """Drive in a short segment. Never drive without a valid sonar measurement."""
-    if distance_cm == 0:
-        return False
-    sensor = 'front' if distance_cm > 0 else 'back'
-    if not obstacles.is_clear(sonar(arlo, sensor), distance_cm):
-        return False
+def sonars(arlo, *names):
+    """{name: cm} for the front and diagonal sonars. A failed reading (twice) counts as 0."""
+    readings = {}
+    for name in names or ('front', 'left', 'right'):
+        value = sonar(arlo, name)
+        if value is None:
+            value = sonar(arlo, name)
+        readings[name] = value or 0.0
+    return readings
+
+
+def blocked(readings):
+    return any(cm < (SIDE_STOP_CM if name in ('left', 'right') else FRONT_STOP_CM)
+               for name, cm in readings.items())
+
+
+def escape_drive(arlo, particles, distance_cm):
+    """Drive straight, halting if the sonars find something close in the driving direction."""
+    names = ('front', 'left', 'right') if distance_cm > 0 else ('back',)
     direction = Direction.FORWARD if distance_cm > 0 else Direction.BACKWARD
-    arlo.drive(direction, DRIVE_SPEED_CMS, distance_cm=abs(distance_cm), debug=False).wait()
+    handle = arlo.drive(direction, DRIVE_SPEED_CMS, distance_cm=abs(distance_cm), debug=False)
+    try:
+        while handle.is_alive():
+            if blocked(sonars(arlo, *names)):
+                print("Escape drive halted: sonar")
+                break
+    finally:
+        if handle.is_alive():
+            handle.halt("sonar")
     if particles is not None:
-        mcl.motion_update(particles, delta_trans_cm=distance_cm)
-    return True
+        mcl.motion_update(particles, math.copysign(handle.traveled, distance_cm),
+                          math.radians(handle.turned))
+
+
+def known_pose(particles, weights):
+    if particles is None or mcl.position_spread_cm(particles, weights) > MAX_POSITION_SPREAD_CM:
+        return None
+    return mcl.pose_estimate(particles, weights)
+
+
+def room_ahead(arlo, particles, weights):
+    """Room to drive ESCAPE_CM ahead: by the sonars, and by the map if the pose is known
+    (the end must be inside the bounds and outside the no-go zones we are not in already)."""
+    readings = sonars(arlo)
+    if readings['front'] < ESCAPE_CM + FRONT_STOP_CM or blocked(readings):
+        return False
+    pose = known_pose(particles, weights)
+    if pose is None:
+        return True
+    x, y, theta = pose
+    end = (x + ESCAPE_CM * math.cos(theta), y + ESCAPE_CM * math.sin(theta))
+    x_min, x_max, y_min, y_max = RRT_BOUNDS
+    return (x_min <= end[0] <= x_max and y_min <= end[1] <= y_max
+            and all(math.dist(end, (ox, oy)) > r or math.dist((x, y), (ox, oy)) <= r
+                    for ox, oy, r in no_go_zones()))
+
+
+def remember_bump(particles, weights, readings):
+    """Put what the closest sonar sees on the map, unless it is a landmark or an obstacle
+    the camera has mapped already."""
+    pose = known_pose(particles, weights)
+    if pose is None:
+        return
+    x, y, theta = pose
+    name = min(readings, key=readings.get)
+    reach = ROBOT_RADIUS_CM + readings[name] + obstacles.OBSTACLE_RADIUS_CM
+    bump = (x + reach * math.cos(theta + SONAR_BEARINGS[name]),
+            y + reach * math.sin(theta + SONAR_BEARINGS[name]))
+    known = list(POSITIONS.values()) + [(ox, oy) for ox, oy, _ in obstacle_map.values()]
+    if all(math.dist(bump, point) > TOUCH_CM for point in known):
+        print(f"Sonar bump at ({bump[0]:.0f}, {bump[1]:.0f})")
+        bumps.append(bump)
+
+
+def escape(arlo, particles, weights, side=None):
+    """Something close: turn away from it, to the side with the most room (or the given
+    side, +1 left / -1 right), in 45 degree steps until there is room ahead, then drive
+    ESCAPE_CM. Also used to look from elsewhere when localization fails."""
+    readings = sonars(arlo)
+    if blocked(readings):
+        remember_bump(particles, weights, readings)
+        print(f"Escaping: {readings}")
+        if readings['front'] < FRONT_STOP_CM and min(readings['left'], readings['right']) < SIDE_STOP_CM:
+            escape_drive(arlo, particles, -BACKUP_CM)
+    if side is None:
+        side = 1 if readings['left'] > readings['right'] else -1
+    for _ in range(360 // ESCAPE_TURN_DEG):
+        if room_ahead(arlo, particles, weights):
+            escape_drive(arlo, particles, ESCAPE_CM)
+            return
+        turn(arlo, particles, side * ESCAPE_TURN_DEG)
+    escape_drive(arlo, particles, -BACKUP_CM)  # No room anywhere: back up and look again
 
 
 def update_localization(particles, weights, seen_landmarks):
@@ -215,18 +311,9 @@ def update_localization(particles, weights, seen_landmarks):
     return particles, weights
 
 
-def choose_action(arlo, obstacle_markers, failed_action=None):
-    return obstacles.choose_action(
-        sonar(arlo, 'front'), sonar(arlo, 'left'),
-        sonar(arlo, 'right'), sonar(arlo, 'back'),
-        obstacle_markers.values(), distance_cm=DRIVE_STEP_CM, failed_action=failed_action
-    )
-
-
-def segment_distance(waypoint_distance, final):
-    """Distance to drive towards a waypoint in one continuous segment."""
-    if final:  # Stop well inside TARGET_DISTANCE_CM instead of driving into the landmark
-        waypoint_distance -= TARGET_DISTANCE_CM / 2
+def segment_distance(waypoint_distance):
+    """Distance to drive towards a waypoint in one continuous segment. The last
+    waypoint already stops GOAL_RADIUS_CM short of the landmark."""
     return max(DRIVE_STEP_CM, waypoint_distance)
 
 
@@ -240,17 +327,40 @@ def predict(particles, moved_cm, turned_rad):
     return shown
 
 
-def drive_segment(arlo, camera, particles, weights, distance_cm, target, path, waypoint):
+def no_go_zones():
+    """Mapped obstacles and sonar bumps as (x, y, radius) circles the robot centre must
+    stay out of."""
+    return ([(ox, oy, obstacles.MAP_CLEARANCE_CM) for ox, oy, _ in obstacle_map.values()]
+            + [(bx, by, obstacles.MAP_CLEARANCE_CM) for bx, by in bumps])
+
+
+def path_blocked(path, waypoint_index, x, y):
+    """True when the rest of the path crosses a no-go zone: the planned segments from
+    the current one on, or the line from the robot to its waypoint, where it steers.
+    Obstacles are mapped after planning, and repeated sightings move them."""
+    zones = no_go_zones()
+    rest = path[waypoint_index - 1:]
+    if rrt.path_in_collision(rest, zones):
+        return True
+    # From inside a zone every line is blocked; leaving it is the planned segment's job
+    return (not any(math.dist((x, y), (ox, oy)) <= r for ox, oy, r in zones)
+            and rrt.path_in_collision([(x, y), path[waypoint_index]], zones))
+
+
+def drive_segment(arlo, camera, particles, weights, distance_cm, target, path,
+                  waypoint_index):
     """Drive distance_cm without stopping, watching the front sonar and the camera.
 
-    Steers in an arc towards waypoint along the way by giving one wheel more power
-    than the other, so a heading error is corrected without stopping to turn. Halts
-    early for an obstacle ahead or a newly mapped obstacle. Landmarks seen on the
+    Steers in an arc towards path[waypoint_index] along the way by giving one wheel
+    more power than the other, so a heading error is corrected without stopping to
+    turn. Halts early for an obstacle ahead or when the rest of the path runs through
+    a no-go zone (see path_blocked), and slows to
+    APPROACH_SPEED_CMS within APPROACH_DISTANCE_CM of the target landmark (by pose
+    estimate or camera) or of whatever the front sonar sees. Landmarks seen on the
     way update MCL, and the map is published every MAP_PUBLISH_INTERVAL_S. Returns
-    (particles, weights, replan); replan is True when a new obstacle was mapped, since
-    the planned path may now run through it.
+    (particles, weights, replan); replan is True when the path ran into a no-go zone.
     """
-    known_obstacles = set(obstacle_map)
+    waypoint = path[waypoint_index]
     handle = arlo.drive(Direction.FORWARD, DRIVE_SPEED_CMS, distance_cm=distance_cm, debug=False)
     applied = 0.0          # Distance already applied to the particles
     applied_turn = 0.0     # Heading change (rad) already applied to the particles
@@ -258,10 +368,14 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path, w
     last_publish = time.monotonic()
     try:
         while handle.is_alive():
-            if not obstacles.is_clear(sonar(arlo, 'front')):
-                print("Segment halted: front sonar")
+            readings = sonars(arlo)
+            if blocked(readings):
+                print(f"Segment halted: sonar {readings}")
                 break
+            front = readings['front']
             seen_landmarks, obstacle_markers = observations(camera)
+            # The camera measures the target directly; the pose estimate may lag behind
+            nearest = min(front, seen_landmarks.get(target, (math.inf,))[0])
             if obstacles.marker_in_path(obstacle_markers.values()) is not None:
                 print("Segment halted: obstacle marker in path")
                 break
@@ -280,10 +394,11 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path, w
             shown = predict(particles, moved, turned)
             if mcl.position_spread_cm(particles, weights) <= MAX_POSITION_SPREAD_CM:
                 x, y, theta = mcl.pose_estimate(shown, weights)
+                nearest = min(nearest, math.dist((x, y), POSITIONS[target]))
                 record_trail(x, y)
                 map_obstacles(obstacle_markers, x, y, theta)
-                if set(obstacle_map) != known_obstacles:
-                    print("Segment halted: new obstacle mapped")
+                if obstacle_markers and path_blocked(path, waypoint_index, x, y):
+                    print("Segment halted: path runs through a no-go zone")
                     replan = True
                     break
                 bearing, distance = navigation.direction_to_target(x, y, theta, *waypoint)
@@ -294,6 +409,9 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path, w
                 handle.steer(steer)
             else:
                 handle.steer(0.0)  # Do not steer on an unreliable pose
+            if nearest <= APPROACH_DISTANCE_CM and handle.speed_limit_cms > APPROACH_SPEED_CMS:
+                print(f"Segment slowing: {nearest:.0f} cm from {target} or an obstacle")
+                handle.limit_speed(APPROACH_SPEED_CMS)
 
             if streamer is not None and time.monotonic() - last_publish >= MAP_PUBLISH_INTERVAL_S:
                 publish_map(shown, weights, target, path)
@@ -306,29 +424,10 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path, w
     return particles, weights, replan
 
 
-def perform(arlo, particles, action):
-    """Perform one action; return False if drive() refused to move."""
-    if action == 'forward':
-        return drive(arlo, particles, DRIVE_STEP_CM)
-    if action == 'backward':
-        return drive(arlo, particles, -obstacles.REVERSE_CM)
-    turn(arlo, particles, -AVOID_TURN_DEG if action == 'right' else AVOID_TURN_DEG)
-    return True
-
-
-def reposition(arlo, particles, obstacle_markers, failed_action):
-    """Choose one movement. Report translation so initialization can reset MCL."""
-    action = choose_action(arlo, obstacle_markers, failed_action)
-    success = perform(arlo, particles, action)
-    moved = success and action in ('forward', 'backward')
-    return moved, None if success else action
-
-
 def initialize(arlo, camera):
     """Initialize from the starting landmark and another; restart after repositioning."""
     particles = weights = None
     seen_second = False
-    failed_action = None
     while True:
         for _ in range(360 // SCAN_STEP_DEG):
             seen_landmarks, obstacle_markers = observations(camera)
@@ -353,10 +452,9 @@ def initialize(arlo, camera):
             time.sleep(SCAN_SETTLE_S)
 
         print("Repositioning to improve localization")
-        moved, failed_action = reposition(arlo, particles, obstacle_markers, failed_action)
-        if moved:
-            particles = weights = None
-            seen_second = False
+        escape(arlo, None, None)
+        particles = weights = None
+        seen_second = False
 
 
 def survey_leg(arlo, camera, particles, weights, target):
@@ -382,10 +480,9 @@ def survey_leg(arlo, camera, particles, weights, target):
 
 def visit_target(arlo, camera, particles, weights, target):
     """Survey the leg, then plan and follow an RRT path to the target, replanning
-    when new obstacles are mapped on the way."""
+    whenever the rest of the path runs through a no-go zone."""
+    bumps.clear()
     particles, weights = survey_leg(arlo, camera, particles, weights, target)
-    failed_action = None
-    detouring = False
     path = None
     waypoint_index = 1
     while True:
@@ -395,7 +492,6 @@ def visit_target(arlo, camera, particles, weights, target):
         spread = mcl.position_spread_cm(particles, weights)
         if spread <= MAX_POSITION_SPREAD_CM:  # Only trust the pose for mapping when converged
             record_trail(x, y)
-            known_obstacles = set(obstacle_map)
             map_obstacles(obstacle_markers, x, y, theta)
 
         target_x, target_y = POSITIONS[target]
@@ -405,13 +501,9 @@ def visit_target(arlo, camera, particles, weights, target):
             return particles, weights
 
         if path is None or (spread <= MAX_POSITION_SPREAD_CM
-                            and set(obstacle_map) != known_obstacles):
-            mapped_obstacles = [
-                (ox, oy, obstacles.MAP_CLEARANCE_CM)
-                for ox, oy, _ in obstacle_map.values()
-            ]
-            path = rrt.plan_path((x, y), (target_x, target_y), mapped_obstacles,
-                                 RRT_BOUNDS)
+                            and path_blocked(path, waypoint_index, x, y)):
+            path = rrt.plan_path((x, y), (target_x, target_y), no_go_zones(),
+                                 RRT_BOUNDS, goal_radius=GOAL_RADIUS_CM)
             if path is None:
                 raise RuntimeError(f"RRT could not find a path to {target}")
             waypoint_index = 1
@@ -429,29 +521,28 @@ def visit_target(arlo, camera, particles, weights, target):
               f"dist={target_distance:.0f} cm, spread={spread:.0f} cm, "
               f"RRT waypoint=({waypoint[0]:.0f}, {waypoint[1]:.0f})")
 
-        action = choose_action(arlo, obstacle_markers, failed_action)
-        if action != 'forward':
-            detouring = True
-        elif not detouring and abs(math.degrees(target_bearing)) > TURN_TOLERANCE_DEG:
+        if blocked(sonars(arlo)):
+            escape(arlo, particles, weights)
+            path = None
+            continue
+
+        if abs(math.degrees(target_bearing)) > TURN_TOLERANCE_DEG:
             turn(arlo, particles, clamp_turn(math.degrees(target_bearing)))
-            failed_action = None
             continue
 
-        if action == 'forward' and not detouring:
-            particles, weights, replan = drive_segment(
-                arlo, camera, particles, weights,
-                segment_distance(waypoint_distance, waypoint_index == len(path) - 1),
-                target, path, waypoint,
-            )
-            if replan:
-                path = None
-            failed_action = None
+        marker_bearing = obstacles.marker_in_path(obstacle_markers.values())
+        if marker_bearing is not None:  # Too close to an obstacle to plan around it
+            escape(arlo, particles, weights, side=-1 if marker_bearing > 0 else 1)
+            path = None
             continue
 
-        success = perform(arlo, particles, action)
-        failed_action = None if success else action
-        if success and action == 'forward':
-            detouring = False
+        particles, weights, replan = drive_segment(
+            arlo, camera, particles, weights,
+            segment_distance(waypoint_distance),
+            target, path, waypoint_index,
+        )
+        if replan:
+            path = None
 
 
 def main():

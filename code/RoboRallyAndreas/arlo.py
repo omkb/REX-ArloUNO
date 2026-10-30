@@ -39,6 +39,12 @@ class DriveHandle:
         self.traveled = 0.0  # Estimated cm (drive) or degrees (turn) covered so far
         self.turned = 0.0    # Estimated heading change in degrees while driving (positive = left)
         self.turn_rate_degs = 0.0  # Requested steering while driving, see steer()
+        self.speed_limit_cms = math.inf  # Requested top speed while driving, see limit_speed()
+
+    def limit_speed(self, speed_cms: float):
+        """Slow down (ramped, at ACCELERATION_CMS2) to at most speed_cms for the rest
+        of the drive; math.inf lifts the limit. Only used by drive()."""
+        self.speed_limit_cms = speed_cms
 
     def steer(self, turn_rate_degs: float):
         """Drive in an arc: turn at turn_rate_degs while driving (positive = left/CCW),
@@ -117,7 +123,7 @@ class Arlo(object):
         own (only returns on its own if distance_cm was given).
         You can also call arlo.stop() to halt whatever is currently driving.
         Call .steer() on the handle to curve while driving; .turned reports the
-        resulting heading change.
+        resulting heading change. Call .limit_speed() to slow down mid-drive.
         """
         # terminate any prior drive before starting a new one
         if self._current_handle is not None:
@@ -163,13 +169,6 @@ class Arlo(object):
                 last_pwm = pwm
                 applied = self._pwm_motion(pwm, direction)
 
-        def advance(dt):
-            """Integrate distance and heading over dt at the commanded speeds."""
-            nonlocal traveled
-            traveled += applied[0] * dt
-            handle.traveled = traveled
-            handle.turned += applied[1] * dt
-
         def halted():
             if halt_signal.is_set():
                 if debug:
@@ -179,76 +178,34 @@ class Arlo(object):
                 return True
             return False
 
-        indefinite = distance_cm is None
-
-        if indefinite:
-            d_accel = float("inf")  # accelerate freely, no distance budget
-        else:
-            d_ramp_total = (target_speed ** 2 - v0 ** 2) / a
-            if d_ramp_total >= distance_cm:
-                target_speed = (v0 ** 2 + a * distance_cm) ** 0.5
-                d_accel = d_decel = distance_cm / 2.0
-            else:
-                d_accel = d_decel = (target_speed ** 2 - v0 ** 2) / (2 * a)
-
-        # --- acceleration phase ---
+        # One control loop: ease towards the lowest of the cruise speed, the handle's
+        # speed limit and, with a distance, the speed from which the robot can still
+        # slow down to v0 by the end. Every change is ramped at a.
         if debug:
-            print("drive: acceleration")
-        while current_speed < target_speed and traveled < d_accel:
-            if halted():
-                return
-            now = time.monotonic()
-            dt = now - t_prev
-            t_prev = now
-
-            advance(dt)
-            current_speed = min(target_speed, current_speed + a * dt)
-            send_speed(current_speed)
-            time.sleep(self.CONTROL_DT_S)
-
-        # --- cruise phase ---
-        if debug:
-            print("drive: cruise phase")
-        current_speed = target_speed
+            print("drive: start")
         send_speed(current_speed)
-
-        if indefinite:
-            # cruise forever — only .halt() / arlo.stop() ends this
-            while True:
-                if halted():
-                    return
-                now = time.monotonic()
-                advance(now - t_prev)
-                t_prev = now
-                send_speed(current_speed)
-                time.sleep(self.CONTROL_DT_S)
-
-        cruise_end = distance_cm - d_decel
-        while traveled < cruise_end:
+        while distance_cm is None or traveled < distance_cm:
             if halted():
                 return
+            time.sleep(self.CONTROL_DT_S)
             now = time.monotonic()
             dt = now - t_prev
             t_prev = now
 
-            advance(dt)
-            send_speed(current_speed)
-            time.sleep(self.CONTROL_DT_S)
+            traveled += applied[0] * dt
+            handle.traveled = traveled
+            handle.turned += applied[1] * dt
 
-        # --- deceleration phase ---
-        if debug:
-            print("drive: deacceleration")
-        while current_speed > v0 and traveled < distance_cm:
-            if halted():
-                return
-            now = time.monotonic()
-            dt = now - t_prev
-            t_prev = now
-
-            advance(dt)
-            current_speed = max(v0, current_speed - a * dt)
+            desired = min(target_speed, handle.speed_limit_cms)
+            if distance_cm is not None:
+                remaining = max(0.0, distance_cm - traveled)
+                desired = min(desired, (v0 ** 2 + 2 * a * remaining) ** 0.5)
+            if current_speed < desired:
+                current_speed = min(desired, current_speed + a * dt)
+            else:
+                current_speed = max(desired, current_speed - a * dt)
+            current_speed = max(v0, current_speed)
             send_speed(current_speed)
-            time.sleep(self.CONTROL_DT_S)
 
         if debug:
             print("drive: halt")
