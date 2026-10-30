@@ -35,7 +35,7 @@ from mapview import MapView
 
 LANDMARKS = {1: (0, 0), 2: (0, 300), 3: (400, 0), 4: (400, 300)}  # ArUco id -> centre (x, y) cm
 ROUTE = [1, 2, 3, 4, 1]
-TRACK_MARGIN_CM = 120  # The track ends this far outside the landmarks
+TRACK_MARGIN_CM = 100  # The track ends this far outside the landmarks
 
 # Sizes in cm, between centres unless said otherwise
 ROBOT_RADIUS_CM = 22

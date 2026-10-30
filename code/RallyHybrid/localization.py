@@ -4,7 +4,7 @@ import math
 import mcl
 from geometry import relative
 
-GOOD_SPREAD_CM = 55  # Trust the pose when the particles are this close together
+GOOD_SPREAD_CM = 17  # Trust the pose when the particles are this close together
 LOST_CM = 100        # Restart when a landmark is this much further or closer than expected
 
 
