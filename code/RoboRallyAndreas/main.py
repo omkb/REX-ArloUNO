@@ -64,6 +64,8 @@ COURT_MARGIN_CM = 90.0       # Drivable margin around the court; driving beyond 
 RRT_BOUNDS = (-COURT_MARGIN_CM, COURT_WIDTH_CM + COURT_MARGIN_CM,
               -COURT_MARGIN_CM, COURT_HEIGHT_CM + COURT_MARGIN_CM)
 
+RRT_MAX_ITERATIONS = 2000     # A failing plan takes ~40 s on the Pi at 5000; then move and retry
+
 STREAM_MAP = True             # Stream the particle map to http://<robot>:STREAM_PORT/
 STREAM_PORT = 8000
 MAP_MARGIN_PX = 100           # 1 px per cm, plus a margin around the landmarks
@@ -76,6 +78,7 @@ streamer = None
 obstacle_map = {}  # Marker ID -> (x, y, sightings): obstacle centres in world cm
 trail = []         # Pose estimates (x, y) along the route, in world cm
 bumps = []         # (x, y) of obstacles found by the sonars this leg, in world cm
+relaxed = None     # (target, max goal distance): zones closer to the target are ignored
 
 
 def observations(camera):
@@ -330,8 +333,23 @@ def predict(particles, moved_cm, turned_rad):
 def no_go_zones():
     """Mapped obstacles and sonar bumps as (x, y, radius) circles the robot centre must
     stay out of."""
-    return ([(ox, oy, obstacles.MAP_CLEARANCE_CM) for ox, oy, _ in obstacle_map.values()]
-            + [(bx, by, obstacles.MAP_CLEARANCE_CM) for bx, by in bumps])
+    zones = ([(ox, oy, obstacles.MAP_CLEARANCE_CM) for ox, oy, _ in obstacle_map.values()]
+             + [(bx, by, obstacles.MAP_CLEARANCE_CM) for bx, by in bumps])
+    if relaxed is not None:
+        target, reach = relaxed
+        zones = [z for z in zones if math.dist(POSITIONS[target], z[:2]) > z[2] + reach]
+    return zones
+
+
+def goal_reachable(goal, zones):
+    """True when some point within GOAL_RADIUS_CM of the goal is outside every zone."""
+    for radius in (0.0, GOAL_RADIUS_CM / 2, GOAL_RADIUS_CM):
+        for k in range(36):
+            angle = math.radians(10 * k)
+            point = (goal[0] + radius * math.cos(angle), goal[1] + radius * math.sin(angle))
+            if all(math.dist(point, z[:2]) > z[2] for z in zones):
+                return True
+    return False
 
 
 def path_blocked(path, waypoint_index, x, y):
@@ -479,19 +497,22 @@ def survey_leg(arlo, camera, particles, weights, target):
 
 
 def plan_to(x, y, target):
-    """RRT path to the target. If none is found, try again without the zones that cover
-    the goal area (a mis-mapped obstacle next to the landmark); the sonars still guard
-    the last stretch. Returns None if that fails too."""
+    """RRT path to the target. When no-go zones cover the whole goal area (an obstacle
+    mis-mapped next to the landmark), ignore the ones covering the landmark, then those
+    touching the goal area; the sonars still guard the last stretch. Path replanning
+    checks use the same zones. Returns None if RRT finds no path."""
+    global relaxed
     goal = POSITIONS[target]
-    zones = no_go_zones()
-    path = rrt.plan_path((x, y), goal, zones, RRT_BOUNDS, goal_radius=GOAL_RADIUS_CM)
-    if path is None:
-        open_zones = [z for z in zones if math.dist(goal, z[:2]) > z[2] + GOAL_RADIUS_CM]
-        if len(open_zones) < len(zones):
-            print(f"Ignoring {len(zones) - len(open_zones)} no-go zone(s) covering {target}")
-            path = rrt.plan_path((x, y), goal, open_zones, RRT_BOUNDS,
-                                 goal_radius=GOAL_RADIUS_CM)
-    return path
+    relaxed = None
+    count = len(no_go_zones())
+    for reach in (0.0, GOAL_RADIUS_CM):
+        if goal_reachable(goal, no_go_zones()):
+            break
+        relaxed = (target, reach)
+    if relaxed is not None:
+        print(f"Ignoring {count - len(no_go_zones())} no-go zone(s) covering {target}")
+    return rrt.plan_path((x, y), goal, no_go_zones(), RRT_BOUNDS, goal_radius=GOAL_RADIUS_CM,
+                         max_iterations=RRT_MAX_ITERATIONS)
 
 
 def visit_target(arlo, camera, particles, weights, target):
