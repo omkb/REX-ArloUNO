@@ -22,10 +22,10 @@ from camera import Camera
 # the actual *observed ArUco marker centres* before relying on localization.
 # Landmark name -> (ArUco marker ID, (x, y)). Route goes L1, L2, L3, L4, L1.
 LANDMARKS = {
-    'L1': (3, (0.0, 0.0)),
-    'L2': (11, (0.0, 300.0)),
-    'L3': (6, (400.0, 0.0)),
-    'L4': (1, (400.0, 300.0)),
+    'L1': (1, (0.0, 0.0)),
+    'L2': (2, (0.0, 300.0)),
+    'L3': (3, (400.0, 0.0)),
+    'L4': (4, (400.0, 300.0)),
 }
 LANDMARK_BY_MARKER = {marker_id: name for name, (marker_id, _) in LANDMARKS.items()}
 POSITIONS = {name: position for name, (_, position) in LANDMARKS.items()}
@@ -52,7 +52,7 @@ ESCAPE_TURN_DEG = 45
 ROBOT_RADIUS_CM = 22.0
 TOUCH_CM = 42.0             # No sonar bump this close to a landmark or a mapped obstacle
 SONAR_BEARINGS = {'front': 0.0, 'left': math.radians(45), 'right': math.radians(-45)}
-TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
+TARGET_DISTANCE_CM = 50.0    # Reached when the estimated position is within this distance
 GOAL_RADIUS_CM = TARGET_DISTANCE_CM / 2  # RRT paths end this far from the landmark, on its free side
 WAYPOINT_DISTANCE_CM = 20.0  # Advance to the next RRT waypoint within this distance
 STEER_GAIN = 1.0             # Turn rate (deg/s) per degree of bearing error while driving a segment
@@ -60,7 +60,7 @@ MAX_STEER_DEG_S = 20.0       # Sharpest arc while driving; 20 deg/s at 40 cm/s i
 STEER_MIN_DISTANCE_CM = 40.0  # Drive straight this close to the waypoint, where the bearing swings
 COURT_WIDTH_CM = 400.0       # Court spans x in [0, 400] and y in [0, 300], L1 at the origin
 COURT_HEIGHT_CM = 300.0
-COURT_MARGIN_CM = 40.0       # Drivable margin around the court; driving beyond it is not allowed
+COURT_MARGIN_CM = 90.0       # Drivable margin around the court; driving beyond it is not allowed
 RRT_BOUNDS = (-COURT_MARGIN_CM, COURT_WIDTH_CM + COURT_MARGIN_CM,
               -COURT_MARGIN_CM, COURT_HEIGHT_CM + COURT_MARGIN_CM)
 
