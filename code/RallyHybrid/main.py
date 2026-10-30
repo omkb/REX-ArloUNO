@@ -234,17 +234,22 @@ class Racer:
 
     # --- Sensing
     def localize(self):
-        """Turn on the spot until MCL knows where we are; if a full turn is not enough,
-        move somewhere else and try again."""
+        """Turn on the spot until MCL knows where we are from two landmarks. After a full
+        turn, one landmark will do if MCL trusts it; otherwise move elsewhere and try again."""
         self.log("Localizing")
         while True:
+            seen = set()
             for _ in range(360 // SCAN_STEP_DEG):
-                self.look()
-                if self.localizer.known():
+                seen |= self.look().keys() & LANDMARKS.keys()
+                if self.localizer.known() and len(seen) >= 2:
                     self.survey()
                     return
                 self.turn(SCAN_STEP_DEG)
                 time.sleep(0.25)  # Let the camera deliver a sharp picture
+            if self.localizer.known():
+                self.log(f"Only landmark(s) {sorted(seen)} in a full turn; driving on")
+                self.survey()
+                return
             self.log("No pose after a full turn; looking from elsewhere")
             self.escape(self.hw.sonar('front', 'left', 'right'))
 
