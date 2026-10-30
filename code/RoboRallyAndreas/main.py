@@ -48,6 +48,10 @@ AVOID_TURN_DEG = 25.0       # Turn step when avoiding an obstacle
 TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
 GOAL_RADIUS_CM = TARGET_DISTANCE_CM / 2  # RRT paths end this far from the landmark, on its free side
 WAYPOINT_DISTANCE_CM = 20.0  # Advance to the next RRT waypoint within this distance
+INSPECT_DISTANCE_CM = 60.0   # Back up from an unidentified sonar echo to this, so the camera can see it
+MAX_INSPECT_BACKUP_CM = 40.0
+INSPECT_FRAMES = 3           # Pictures taken of it after backing up
+SONAR_MATCH_CM = 40.0        # An echo this close to a landmark or mapped obstacle is that one
 STEER_GAIN = 1.0             # Turn rate (deg/s) per degree of bearing error while driving a segment
 MAX_STEER_DEG_S = 20.0       # Sharpest arc while driving; 20 deg/s at 40 cm/s is a ~115 cm radius
 STEER_MIN_DISTANCE_CM = 40.0  # Drive straight this close to the waypoint, where the bearing swings
@@ -66,7 +70,7 @@ MAP_MAX_SIGHTINGS = 10        # Later sightings still move a mapped obstacle by 
 TRAIL_MIN_STEP_CM = 5.0       # Only extend the trail once the pose estimate moves this far
 
 streamer = None
-obstacle_map = {}  # Marker ID -> (x, y, sightings): obstacle centres in world cm
+obstacle_map = {}  # Marker ID (or 'S<n>' for sonar-only) -> (x, y, sightings): centres in world cm
 trail = []         # Pose estimates (x, y) along the route, in world cm
 
 
@@ -336,6 +340,43 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path,
     return particles, weights, replan
 
 
+def unidentified_echo(front, x, y, theta):
+    """World position of the obstacle centre behind a front sonar reading that blocks the
+    way, or None when the way is clear or the echo is a landmark or a mapped obstacle."""
+    if obstacles.is_clear(front, DRIVE_STEP_CM):
+        return None
+    reach = front + obstacles.OBSTACLE_RADIUS_CM
+    echo = (x + reach * math.cos(theta), y + reach * math.sin(theta))
+    return None if is_known(echo) else echo
+
+
+def is_known(point):
+    """True when point is at a landmark or a mapped obstacle."""
+    known = list(POSITIONS.values()) + [(ox, oy) for ox, oy, _ in obstacle_map.values()]
+    return any(math.dist(point, known_point) <= SONAR_MATCH_CM for known_point in known)
+
+
+def inspect_echo(arlo, camera, particles, weights, front, echo):
+    """Something the camera did not identify is close ahead at echo (a box right in front
+    of the camera, or below its view). Back up so the camera can see it, take pictures,
+    and map it: by its marker if one is seen there, otherwise as a sonar-only obstacle
+    at echo. The path through it is then blocked, so visit_target replans around it."""
+    backup = min(MAX_INSPECT_BACKUP_CM, INSPECT_DISTANCE_CM - front)
+    print(f"Unidentified echo at {front:.0f} cm; backing up {backup:.0f} cm to look at it")
+    if backup > 0 and not drive(arlo, particles, -backup):
+        print("No room to back up; inspecting from here")
+    for _ in range(INSPECT_FRAMES):
+        seen_landmarks, obstacle_markers = observations(camera)
+        particles, weights = update_localization(particles, weights, seen_landmarks)
+        if mcl.position_spread_cm(particles, weights) <= MAX_POSITION_SPREAD_CM:
+            map_obstacles(obstacle_markers, *mcl.pose_estimate(particles, weights))
+    if not is_known(echo):  # No marker seen there: the echo itself is the obstacle
+        key = f"S{sum(1 for k in obstacle_map if isinstance(k, str)) + 1}"
+        obstacle_map[key] = (*echo, MAP_MAX_SIGHTINGS)  # No marker sighting will move it
+        print(f"Mapped sonar-only obstacle {key} at ({echo[0]:.0f}, {echo[1]:.0f})")
+    return particles, weights
+
+
 def perform(arlo, particles, action):
     """Perform one action; return False if drive() refused to move."""
     if action == 'forward':
@@ -453,6 +494,13 @@ def visit_target(arlo, camera, particles, weights, target):
         print(f"{target}: pose=({x:.0f}, {y:.0f}, {math.degrees(theta):.0f}°), "
               f"dist={target_distance:.0f} cm, spread={spread:.0f} cm, "
               f"RRT waypoint=({waypoint[0]:.0f}, {waypoint[1]:.0f})")
+
+        if spread <= MAX_POSITION_SPREAD_CM:
+            front = sonar(arlo, 'front')
+            echo = unidentified_echo(front, x, y, theta) if front is not None else None
+            if echo is not None:
+                particles, weights = inspect_echo(arlo, camera, particles, weights, front, echo)
+                continue  # The new obstacle blocks the path, so the next pass replans
 
         action = choose_action(arlo, obstacle_markers, failed_action)
         if action != 'forward':
