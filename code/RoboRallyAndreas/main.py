@@ -426,7 +426,8 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path,
                                 min(MAX_STEER_DEG_S, STEER_GAIN * math.degrees(bearing)))
                 handle.steer(steer)
             else:
-                handle.steer(0.0)  # Do not steer on an unreliable pose
+                print("Segment halted: position spread too large")
+                break
             if nearest <= APPROACH_DISTANCE_CM and handle.speed_limit_cms > APPROACH_SPEED_CMS:
                 print(f"Segment slowing: {nearest:.0f} cm from {target} or an obstacle")
                 handle.limit_speed(APPROACH_SPEED_CMS)
@@ -496,6 +497,25 @@ def survey_leg(arlo, camera, particles, weights, target):
     return particles, weights
 
 
+def relocalize(arlo, camera, particles, weights, target):
+    """Turn on the spot until a landmark brings the spread under MAX_POSITION_SPREAD_CM.
+    After a full turn without that, move elsewhere with escape and turn again."""
+    print(f"Relocalizing; spread={mcl.position_spread_cm(particles, weights):.0f} cm")
+    while True:
+        for _ in range(360 // SCAN_STEP_DEG):
+            turn(arlo, particles, SCAN_STEP_DEG)  # Turn first: this view was used already
+            time.sleep(SCAN_SETTLE_S)
+            seen_landmarks, _ = observations(camera)
+            particles, weights = update_localization(particles, weights, seen_landmarks)
+            publish_map(particles, weights, target)
+            spread = mcl.position_spread_cm(particles, weights)
+            if seen_landmarks and spread <= MAX_POSITION_SPREAD_CM:
+                print(f"Relocalized from {list(seen_landmarks)}; spread={spread:.0f} cm")
+                return particles, weights
+        print("Relocalizing: no good landmark in a full turn; moving")
+        escape(arlo, particles, weights)
+
+
 def plan_to(x, y, target):
     """RRT path to the target. When no-go zones cover the whole goal area (an obstacle
     mis-mapped next to the landmark), ignore the ones covering the landmark, then those
@@ -530,6 +550,11 @@ def visit_target(arlo, camera, particles, weights, target):
         if spread <= MAX_POSITION_SPREAD_CM:  # Only trust the pose for mapping when converged
             record_trail(x, y)
             map_obstacles(obstacle_markers, x, y, theta)
+
+        if spread > MAX_POSITION_SPREAD_CM:
+            particles, weights = relocalize(arlo, camera, particles, weights, target)
+            path = None
+            continue
 
         target_x, target_y = POSITIONS[target]
         target_distance = math.hypot(target_x - x, target_y - y)
