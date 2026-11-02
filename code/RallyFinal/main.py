@@ -35,7 +35,7 @@ ROUTE = list(LANDMARKS) + [START_LANDMARK]
 
 COURT_WIDTH_CM = 400.0       # Court spans x in [0, 400] and y in [0, 300], L1 at the origin
 COURT_HEIGHT_CM = 300.0
-COURT_MARGIN_CM = 90.0       # Drivable margin around the court; driving beyond it is not allowed
+COURT_MARGIN_CM = 100.0       # Drivable margin around the court; driving beyond it is not allowed
 RRT_BOUNDS = (-COURT_MARGIN_CM, COURT_WIDTH_CM + COURT_MARGIN_CM,
               -COURT_MARGIN_CM, COURT_HEIGHT_CM + COURT_MARGIN_CM)
 
