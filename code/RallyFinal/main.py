@@ -48,7 +48,7 @@ MEASURE_MIN_CM = 10.0        # While driving, update MCL from landmarks at most 
 
 # --- Landmark visits and path planning
 TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
-GOAL_RADIUS_CM = TARGET_DISTANCE_CM / 2  # RRT paths end this far from the landmark, on its free side
+GOAL_RADIUS_CM = TARGET_DISTANCE_CM  # End RRT paths at the same robot-centre distance used for arrival
 SURVEY_FRAMES = 1          # Frames taken facing a new target landmark before planning its leg
 RRT_MAX_ITERATIONS = 2000     # A failing plan takes ~40 s on the Pi at 5000; then move and retry
 
@@ -371,7 +371,8 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path,
 
     Steers in an arc towards path[waypoint_index] along the way by giving one wheel
     more power than the other, so a heading error is corrected without stopping to
-    turn. Halts early for an obstacle ahead or when the rest of the path runs through
+    turn. Halts early when the estimated robot centre reaches TARGET_DISTANCE_CM
+    from the target, for an obstacle ahead or when the rest of the path runs through
     a no-go zone (see path_blocked), and slows to
     APPROACH_SPEED_CMS within APPROACH_DISTANCE_CM of the target landmark (by pose
     estimate or camera) or of whatever the front sonar sees. Landmarks seen on the
@@ -414,7 +415,11 @@ def drive_segment(arlo, camera, particles, weights, distance_cm, target, path,
             mcl.motion_update(shown, moved, turned)
             if mcl.position_spread_cm(shown, weights) <= MAX_POSITION_SPREAD_CM:
                 x, y, theta = mcl.pose_estimate(shown, weights)
-                nearest = min(nearest, math.dist((x, y), POSITIONS[target]))
+                target_distance = math.dist((x, y), POSITIONS[target])
+                if target_distance <= TARGET_DISTANCE_CM:
+                    print(f"Segment halted: within {TARGET_DISTANCE_CM:.0f} cm of {target}")
+                    break
+                nearest = min(nearest, target_distance)
                 record_trail(x, y)
                 map_obstacles(obstacle_markers, x, y, theta)
                 if obstacle_markers and path_blocked(path, waypoint_index, x, y):
