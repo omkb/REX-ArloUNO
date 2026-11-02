@@ -23,10 +23,10 @@ from camera import Camera
 # the actual *observed ArUco marker centres* before relying on localization.
 # Landmark name -> (ArUco marker ID, (x, y)). Route goes L1, L2, L3, L4, L1.
 LANDMARKS = {
-    'L1': (7, (0.0, 0.0)),
-    'L2': (6, (0.0, 300.0)),
-    'L3': (8, (400.0, 0.0)),
-    'L4': (11, (400.0, 300.0)),
+    'L1': (1, (0.0, 0.0)),
+    'L2': (2, (0.0, 300.0)),
+    'L3': (3, (400.0, 0.0)),
+    'L4': (4, (400.0, 300.0)),
 }
 LANDMARK_BY_MARKER = {marker_id: name for name, (marker_id, _) in LANDMARKS.items()}
 POSITIONS = {name: position for name, (_, position) in LANDMARKS.items()}
@@ -47,8 +47,8 @@ MAX_POSITION_SPREAD_CM = 45.0  # Experimental threshold, tune on the real robot
 MEASURE_MIN_CM = 10.0        # While driving, update MCL from landmarks at most once per this distance
 
 # --- Landmark visits and path planning
-TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
-GOAL_RADIUS_CM = TARGET_DISTANCE_CM  # End RRT paths at the same robot-centre distance used for arrival
+TARGET_DISTANCE_CM = 66.0    # Reached when the estimated position is within this distance
+GOAL_RADIUS_CM = TARGET_DISTANCE_CM-7  # End RRT paths at the same robot-centre distance used for arrival
 SURVEY_FRAMES = 1          # Frames taken facing a new target landmark before planning its leg
 RRT_MAX_ITERATIONS = 2000     # A failing plan takes ~40 s on the Pi at 5000; then move and retry
 
