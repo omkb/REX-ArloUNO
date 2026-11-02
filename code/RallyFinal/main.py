@@ -71,7 +71,7 @@ ESCAPE_CM = 60              # Drive this far away from what the sonars found
 BACKUP_CM = 30
 ESCAPE_TURN_DEG = 45
 ROBOT_RADIUS_CM = 22.0
-TOUCH_CM = 42.0             # No sonar bump this close to a landmark or a mapped obstacle
+TOUCH_CM = 42.0             # No sonar bump this close to a landmark, mapped obstacle or existing bump
 SONAR_BEARINGS = {'front': 0.0, 'left': math.radians(55), 'right': math.radians(-55)}
 
 # --- Obstacle mapping and trail
@@ -281,8 +281,7 @@ def room_ahead(arlo, particles, weights):
 
 
 def remember_bump(particles, weights, readings):
-    """Put what the closest sonar sees on the map, unless it is a landmark or an obstacle
-    the camera has mapped already."""
+    """Map the closest sonar detection unless near a landmark, mapped obstacle or bump."""
     pose = known_pose(particles, weights)
     if pose is None:
         return
@@ -291,7 +290,9 @@ def remember_bump(particles, weights, readings):
     reach = ROBOT_RADIUS_CM + readings[name] + obstacles.OBSTACLE_RADIUS_CM
     bump = (x + reach * math.cos(theta + SONAR_BEARINGS[name]),
             y + reach * math.sin(theta + SONAR_BEARINGS[name]))
-    known = list(POSITIONS.values()) + [(ox, oy) for ox, oy, _ in obstacle_map.values()]
+    known = (list(POSITIONS.values())
+             + [(ox, oy) for ox, oy, _ in obstacle_map.values()]
+             + bumps)
     if all(math.dist(bump, point) > TOUCH_CM for point in known):
         print(f"Sonar bump at ({bump[0]:.0f}, {bump[1]:.0f})")
         bumps.append(bump)
