@@ -18,6 +18,7 @@ import rrt
 from arlo import Arlo, Direction
 from camera import Camera
 
+# --- Course and route
 # Coordinates in cm. These describe the schematic square; correct them to
 # the actual *observed ArUco marker centres* before relying on localization.
 # Landmark name -> (ArUco marker ID, (x, y)). Route goes L1, L2, L3, L4, L1.
@@ -32,48 +33,59 @@ POSITIONS = {name: position for name, (_, position) in LANDMARKS.items()}
 START_LANDMARK = 'L1'
 ROUTE = list(LANDMARKS) + [START_LANDMARK]
 
-SCAN_STEP_DEG = 10
-SCAN_SETTLE_S = 0.25
-SURVEY_FRAMES = 3            # Frames taken facing a new target landmark before planning its leg
-MAX_POSITION_SPREAD_CM = 55.0  # Experimental threshold, tune on the real robot
-DRIVE_STEP_CM = 30.0         # Forward step while detouring, and the shortest segment drive
-MEASURE_MIN_CM = 10.0        # While driving, update MCL from landmarks at most once per this distance
-DRIVE_SPEED_CMS = 40.0
-APPROACH_SPEED_CMS = 20.0    # Slow down to this within APPROACH_DISTANCE_CM of the target or anything ahead
-APPROACH_DISTANCE_CM = 100.0
-TURN_SPEED_DEG_S = 50.0     # Slowest real turn: wheels at SPEED_AT_PWM_MIN_CMS (lower is clamped)
-TURN_TOLERANCE_DEG = 12.0
-MAX_TURN_STEP_DEG = 180.0   # Longest single turn towards a target; 180 turns the full bearing at once
-FRONT_STOP_CM = 25          # Sonar: stop for anything this close ahead (or behind, reversing)
-SIDE_STOP_CM = 12           # ... or this close to the diagonal sonars
-ESCAPE_CM = 60              # Drive this far away from what the sonars found
-BACKUP_CM = 20
-ESCAPE_TURN_DEG = 45
-ROBOT_RADIUS_CM = 22.0
-TOUCH_CM = 42.0             # No sonar bump this close to a landmark or a mapped obstacle
-SONAR_BEARINGS = {'front': 0.0, 'left': math.radians(45), 'right': math.radians(-45)}
-TARGET_DISTANCE_CM = 60.0    # Reached when the estimated position is within this distance
-GOAL_RADIUS_CM = TARGET_DISTANCE_CM / 2  # RRT paths end this far from the landmark, on its free side
-WAYPOINT_DISTANCE_CM = 20.0  # Advance to the next RRT waypoint within this distance
-STEER_GAIN = 1.0             # Turn rate (deg/s) per degree of bearing error while driving a segment
-MAX_STEER_DEG_S = 20.0       # Sharpest arc while driving; 20 deg/s at 40 cm/s is a ~115 cm radius
-STEER_MIN_DISTANCE_CM = 40.0  # Drive straight this close to the waypoint, where the bearing swings
 COURT_WIDTH_CM = 400.0       # Court spans x in [0, 400] and y in [0, 300], L1 at the origin
 COURT_HEIGHT_CM = 300.0
 COURT_MARGIN_CM = 90.0       # Drivable margin around the court; driving beyond it is not allowed
 RRT_BOUNDS = (-COURT_MARGIN_CM, COURT_WIDTH_CM + COURT_MARGIN_CM,
               -COURT_MARGIN_CM, COURT_HEIGHT_CM + COURT_MARGIN_CM)
 
+# --- Localization
+CAMERA_FORWARD_CM = 22.0     # Forward-facing camera, measured ahead of the robot centre
+SCAN_STEP_DEG = 20
+SCAN_SETTLE_S = 0.25
+MAX_POSITION_SPREAD_CM = 45.0  # Experimental threshold, tune on the real robot
+MEASURE_MIN_CM = 10.0        # While driving, update MCL from landmarks at most once per this distance
+
+# --- Landmark visits and path planning
+TARGET_DISTANCE_CM = 55.0    # Reached when the estimated position is within this distance
+GOAL_RADIUS_CM = TARGET_DISTANCE_CM / 2  # RRT paths end this far from the landmark, on its free side
+SURVEY_FRAMES = 1          # Frames taken facing a new target landmark before planning its leg
 RRT_MAX_ITERATIONS = 2000     # A failing plan takes ~40 s on the Pi at 5000; then move and retry
 
+# --- Driving and steering
+DRIVE_STEP_CM = 30.0         # Forward step while detouring, and the shortest segment drive
+DRIVE_SPEED_CMS = 40.0
+APPROACH_SPEED_CMS = 20.0    # Slow down to this within APPROACH_DISTANCE_CM of the target or anything ahead
+APPROACH_DISTANCE_CM = 100.0
+TURN_SPEED_DEG_S = 50.0     # Slowest real turn: wheels at SPEED_AT_PWM_MIN_CMS (lower is clamped)
+TURN_TOLERANCE_DEG = 12.0
+WAYPOINT_DISTANCE_CM = 20.0  # Advance to the next RRT waypoint within this distance
+STEER_GAIN = 1.0             # Turn rate (deg/s) per degree of bearing error while driving a segment
+MAX_STEER_DEG_S = 20.0       # Sharpest arc while driving; 20 deg/s at 40 cm/s is a ~115 cm radius
+STEER_MIN_DISTANCE_CM = 40.0  # Drive straight this close to the waypoint, where the bearing swings
+
+# --- Sonar and obstacle escape
+FRONT_STOP_CM = 40          # Sonar: stop for anything this close ahead (or behind, reversing)
+SIDE_STOP_CM = 30          # ... or this close to the diagonal sonars
+ESCAPE_CM = 60              # Drive this far away from what the sonars found
+BACKUP_CM = 30
+ESCAPE_TURN_DEG = 45
+ROBOT_RADIUS_CM = 22.0
+TOUCH_CM = 42.0             # No sonar bump this close to a landmark or a mapped obstacle
+SONAR_BEARINGS = {'front': 0.0, 'left': math.radians(55), 'right': math.radians(-55)}
+
+# --- Obstacle mapping and trail
+MAP_MAX_SIGHTINGS = 10        # Later sightings still move a mapped obstacle by at least 1/10
+TRAIL_MIN_STEP_CM = 5.0       # Only extend the trail once the pose estimate moves this far
+
+# --- Live map
 STREAM_MAP = True             # Stream the particle map to http://<robot>:STREAM_PORT/
 STREAM_PORT = 8000
 MAP_MARGIN_PX = 100           # 1 px per cm, plus a margin around the landmarks
 MAP_MAX_DRAWN = 200           # Drawing all particles is slow on the Pi
 MAP_PUBLISH_INTERVAL_S = 1.0  # Map updates while driving a segment; each one pauses sensing briefly
-MAP_MAX_SIGHTINGS = 10        # Later sightings still move a mapped obstacle by at least 1/10
-TRAIL_MIN_STEP_CM = 5.0       # Only extend the trail once the pose estimate moves this far
 
+# --- Runtime state
 streamer = None
 obstacle_map = {}  # Marker ID -> (x, y, sightings): obstacle centres in world cm
 trail = []         # Pose estimates (x, y) along the route, in world cm
@@ -103,10 +115,12 @@ def observations(camera):
 
 def map_obstacles(obstacle_markers, x, y, theta):
     """Place seen obstacle markers on the map, averaging repeated sightings."""
+    camera_x = x + CAMERA_FORWARD_CM * math.cos(theta)
+    camera_y = y + CAMERA_FORWARD_CM * math.sin(theta)
     for marker_id, (distance, bearing) in obstacle_markers.items():
         reach = distance + obstacles.OBSTACLE_RADIUS_CM
-        ox = x + reach * math.cos(theta + bearing)
-        oy = y + reach * math.sin(theta + bearing)
+        ox = camera_x + reach * math.cos(theta + bearing)
+        oy = camera_y + reach * math.sin(theta + bearing)
         if marker_id in obstacle_map:
             mx, my, n = obstacle_map[marker_id]
             n = min(n + 1, MAP_MAX_SIGHTINGS)
@@ -197,10 +211,6 @@ def sonar(arlo, direction):
     with arlo.serial_lock:  # The drive thread may be sending motor commands
         value = method()
     return float(value) / 10 if value is not None and value > 0 else None
-
-
-def clamp_turn(degrees):
-    return max(-MAX_TURN_STEP_DEG, min(MAX_TURN_STEP_DEG, degrees))
 
 
 def turn(arlo, particles, degrees):
@@ -309,7 +319,7 @@ def escape(arlo, particles, weights, side=None):
 
 def update_localization(particles, weights, seen_landmarks):
     """Weight particles by the seen landmarks and resample."""
-    if mcl.measurement_update(particles, weights, seen_landmarks, POSITIONS):
+    if mcl.measurement_update(particles, weights, seen_landmarks, POSITIONS, camera_forward_cm=CAMERA_FORWARD_CM):
         particles, weights = mcl.resample(particles, weights)
     return particles, weights
 
@@ -441,12 +451,13 @@ def initialize(arlo, camera):
     seen_second = False
     while True:
         for _ in range(360 // SCAN_STEP_DEG):
-            seen_landmarks, obstacle_markers = observations(camera)
+            seen_landmarks, _ = observations(camera)
             print(f"Detected landmarks: {list(seen_landmarks)}")
             if particles is None and START_LANDMARK in seen_landmarks:
-                # The starting landmark is used up by initialization.
+                # The starting landmark is used for initialization.
                 particles, weights = mcl.initialize_from_landmark(
-                    POSITIONS, START_LANDMARK, *seen_landmarks.pop(START_LANDMARK)
+                    POSITIONS, START_LANDMARK, *seen_landmarks.pop(START_LANDMARK),
+                    camera_forward_cm=CAMERA_FORWARD_CM,
                 )
 
             if particles is None:
@@ -470,12 +481,12 @@ def initialize(arlo, camera):
 
 def survey_leg(arlo, camera, particles, weights, target):
     """Face the target landmark and map the obstacles in view before planning the leg."""
-    for _ in range(int(180 // MAX_TURN_STEP_DEG) + 2):
+    for _ in range(3):  # Correct the heading up to three times
         x, y, theta = mcl.pose_estimate(particles, weights)
         bearing, _ = navigation.direction_to_target(x, y, theta, *POSITIONS[target])
         if abs(math.degrees(bearing)) <= TURN_TOLERANCE_DEG:
             break
-        turn(arlo, particles, clamp_turn(math.degrees(bearing)))
+        turn(arlo, particles, math.degrees(bearing))
         time.sleep(SCAN_SETTLE_S)
         seen_landmarks, _ = observations(camera)
         particles, weights = update_localization(particles, weights, seen_landmarks)
@@ -484,6 +495,7 @@ def survey_leg(arlo, camera, particles, weights, target):
         particles, weights = update_localization(particles, weights, seen_landmarks)
         if mcl.position_spread_cm(particles, weights) <= MAX_POSITION_SPREAD_CM:
             map_obstacles(obstacle_markers, *mcl.pose_estimate(particles, weights))
+
     print(f"Surveyed leg to {target}: {len(obstacle_map)} obstacle(s) mapped")
     publish_map(particles, weights, target)
     return particles, weights
@@ -554,8 +566,7 @@ def visit_target(arlo, camera, particles, weights, target):
             print(f"Reached {target}")
             return particles, weights
 
-        if path is None or (spread <= MAX_POSITION_SPREAD_CM
-                            and path_blocked(path, waypoint_index, x, y)):
+        if path is None or (spread <= MAX_POSITION_SPREAD_CM and path_blocked(path, waypoint_index, x, y)):
             path = plan_to(x, y, target)
             if path is None:
                 print(f"RRT could not find a path to {target}; moving and trying again")
@@ -582,7 +593,7 @@ def visit_target(arlo, camera, particles, weights, target):
             continue
 
         if abs(math.degrees(target_bearing)) > TURN_TOLERANCE_DEG:
-            turn(arlo, particles, clamp_turn(math.degrees(target_bearing)))
+            turn(arlo, particles, math.degrees(target_bearing))
             continue
 
         marker_bearing = obstacles.marker_in_path(obstacle_markers.values())

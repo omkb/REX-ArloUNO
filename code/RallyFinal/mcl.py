@@ -1,6 +1,8 @@
 """Simple MCL using an (N, 3) array of x/y/theta and an array of weights.
 
-Distances are in centimetres and angles in radians. Typical use::
+Particles describe the robot centre, with theta pointing forward. Distances are
+in centimetres and angles in radians. Camera observations use a forward-facing
+camera; camera_forward_cm is its distance ahead of the robot centre. Typical use::
 
     particles, weights = initialize_from_landmark(landmarks, marker_id, distance, bearing)
     motion_update(particles, delta_trans_cm=20)
@@ -33,8 +35,9 @@ def wrap_angle(angle):
     return (angle + np.pi) % (2 * np.pi) - np.pi
 
 
-def initialize_from_landmark(landmarks, landmark_id, distance_cm, bearing_rad, num_particles=NUM_PARTICLES):
-    """Sample poses on a ring around one observed landmark."""
+def initialize_from_landmark(landmarks, landmark_id, distance_cm, bearing_rad,
+                             num_particles=NUM_PARTICLES, camera_forward_cm=0.0):
+    """Sample camera positions around a landmark, then convert to robot-centre poses."""
     lx, ly = landmarks[landmark_id]
     phi = np.random.uniform(-np.pi, np.pi, num_particles)
     radius = np.maximum(1.0, np.random.normal(distance_cm, SIGMA_DISTANCE, num_particles))
@@ -44,6 +47,8 @@ def initialize_from_landmark(landmarks, landmark_id, distance_cm, bearing_rad, n
         np.arctan2(ly - y, lx - x) - bearing_rad
         + np.random.normal(0, SIGMA_BEARING, num_particles)
     )
+    x -= camera_forward_cm * np.cos(theta)
+    y -= camera_forward_cm * np.sin(theta)
     return np.column_stack((x, y, theta)), np.full(num_particles, 1.0 / num_particles)
 
 
@@ -77,7 +82,7 @@ def motion_update(particles, delta_trans_cm=0.0, delta_rot_rad=0.0):
     particles[:, 2] = theta
 
 
-def measurement_update(particles, weights, observations, landmarks):
+def measurement_update(particles, weights, observations, landmarks, camera_forward_cm=0.0):
     """Update weights in place; observations are {id: (distance_cm, bearing_rad)}.
 
     Multiply existing weights by new likelihoods to combine observations over
@@ -89,12 +94,14 @@ def measurement_update(particles, weights, observations, landmarks):
         return False
 
     x, y, theta = particles.T
+    camera_x = x + camera_forward_cm * np.cos(theta)
+    camera_y = y + camera_forward_cm * np.sin(theta)
     log_weights = np.full(len(weights), -np.inf)
     np.log(weights, out=log_weights, where=weights > 0)
 
     for marker_id, (distance_cm, bearing_rad) in observations.items():
         lx, ly = landmarks[marker_id]
-        dx, dy = lx - x, ly - y
+        dx, dy = lx - camera_x, ly - camera_y
         expected_bearing = wrap_angle(np.arctan2(dy, dx) - theta)
         distance_error = (distance_cm - np.hypot(dx, dy)) / SIGMA_DISTANCE
         bearing_error = wrap_angle(bearing_rad - expected_bearing) / SIGMA_BEARING
